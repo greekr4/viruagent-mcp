@@ -1,0 +1,20 @@
+{
+  "name": "viruagent-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for ViruAgent publishing tasks (Tistory first).",
+  "private": false,
+  "type": "commonjs",
+  "bin": {
+    "viruagent-mcp": "bin/index.js"
+  },
+  "scripts": {
+    "start": "node bin/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "playwright": "^1.58.2"
+  }
+}
