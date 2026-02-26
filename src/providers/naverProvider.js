@@ -34,6 +34,10 @@ const createNaverProvider = () => {
       return unavailable('listPosts');
     },
 
+    async getPost() {
+      return unavailable('getPost');
+    },
+
     async logout() {
       return {
         provider: 'naver',

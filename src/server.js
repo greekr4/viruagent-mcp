@@ -7,6 +7,10 @@ const {
 
 const { buildError, buildOk } = require('./utils/response');
 const { createProviderManager } = require('./services/providerManager');
+const {
+  sanitizeTitleDecorations,
+  validateMcpSystemPrompt,
+} = require('./utils/systemPromptPolicy');
 
 const createServer = () => {
   const providerManager = createProviderManager();
@@ -102,6 +106,11 @@ const createServer = () => {
               description: '본문에 삽입할 관련 이미지 키워드(예: [\"갤럭시\", \"AI\"])',
               items: { type: 'string' },
             },
+            enforceSystemPrompt: {
+              type: 'boolean',
+              default: true,
+              description: 'system-prompt.md 규격 위반 시 publish를 막고 위반 사유 반환',
+            },
             imageUrls: {
               type: 'array',
               description: '클라이언트(Claude/Codex)가 수집한 이미지 경로 목록. URL(http/https) 또는 로컬 파일 경로를 허용합니다. URL은 로컬 임시 파일로 저장 후 업로드됩니다.',
@@ -140,6 +149,11 @@ const createServer = () => {
               type: 'array',
               description: '본문 이미지 플레이스홀더 키워드(예: [\"갤럭시\", \"AI\"])',
               items: { type: 'string' },
+            },
+            enforceSystemPrompt: {
+              type: 'boolean',
+              default: true,
+              description: 'system-prompt.md 규격 위반 시 임시저장도 막고 위반 사유 반환',
             },
             imageUrls: {
               type: 'array',
@@ -200,6 +214,30 @@ const createServer = () => {
         },
       },
       {
+        name: 'viruagent_read_post',
+        description: 'postId로 글 본문/썸네일을 조회합니다.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            provider: {
+              type: 'string',
+              enum: ['tistory', 'naver'],
+              default: 'tistory',
+            },
+            postId: {
+              type: 'string',
+              description: '조회할 글 ID',
+            },
+            includeDraft: {
+              type: 'boolean',
+              description: '초안 조회 플래그(현재는 tistory만 동작)',
+              default: false,
+            },
+          },
+          required: ['postId'],
+        },
+      },
+      {
         name: 'viruagent_logout',
         description: 'provider 메타데이터를 초기화합니다(브라우저 세션 파일은 유지).',
         inputSchema: {
@@ -240,27 +278,88 @@ const createServer = () => {
           password: args.password,
           twoFactorCode: args.twoFactorCode,
         }),
-        viruagent_publish: () => provider.publish({
-          title: args.title,
-          content: args.content,
-          visibility: args.visibility || 'public',
-          category: Number(args.category) || 0,
-          tags: args.tags || '',
-          thumbnail: args.thumbnail || null,
-          relatedImageKeywords: args.relatedImageKeywords || [],
-          imageUrls: args.imageUrls || [],
-          imageUploadLimit: Number(args.imageUploadLimit),
-          autoUploadImages: args.autoUploadImages,
-        }),
-        viruagent_save_draft: () => provider.saveDraft({
-          title: args.title,
-          content: args.content,
-          tags: args.tags || '',
-          category: Number(args.category) || 0,
-          relatedImageKeywords: args.relatedImageKeywords || [],
-          imageUrls: args.imageUrls || [],
-          imageUploadLimit: Number(args.imageUploadLimit),
-          autoUploadImages: args.autoUploadImages,
+        viruagent_publish: () => {
+          const sanitizedTitle = sanitizeTitleDecorations(args.title || '');
+          const hasSanitizedTitle = String(sanitizedTitle || '').trim() !== String(args.title || '').trim();
+          const policy = validateMcpSystemPrompt({
+            title: sanitizedTitle,
+            content: args.content || '',
+            tags: args.tags || '',
+          });
+          if (args.enforceSystemPrompt !== false && !policy.valid) {
+            return {
+              mode: 'publish',
+              status: 'system_prompt_violation',
+              title: sanitizedTitle,
+              originalTitle: args.title || '',
+              sanitizedTitle,
+              hasSanitizedTitle,
+              visibility: args.visibility || 'public',
+              tags: args.tags || '',
+              category: Number(args.category) || 0,
+              violations: policy.violations,
+              warnings: policy.warnings,
+              rules: policy.rules,
+              policyFile: policy.policyFile,
+              message: 'system-prompt.md 규격 위반으로 발행이 중단되었습니다. 위반 항목을 보완해 주세요.',
+              promptLoadedLength: policy.policyLoadedLength,
+            };
+          }
+
+          return provider.publish({
+            title: sanitizedTitle,
+            content: args.content,
+            visibility: args.visibility || 'public',
+            category: Number(args.category) || 0,
+            tags: args.tags || '',
+            thumbnail: args.thumbnail || null,
+            relatedImageKeywords: args.relatedImageKeywords || [],
+            imageUrls: args.imageUrls || [],
+            imageUploadLimit: Number(args.imageUploadLimit),
+            autoUploadImages: args.autoUploadImages,
+          });
+        },
+        viruagent_save_draft: () => {
+          const sanitizedTitle = sanitizeTitleDecorations(args.title || '');
+          const hasSanitizedTitle = String(sanitizedTitle || '').trim() !== String(args.title || '').trim();
+          const policy = validateMcpSystemPrompt({
+            title: sanitizedTitle,
+            content: args.content || '',
+            tags: args.tags || '',
+          });
+          if (args.enforceSystemPrompt !== false && !policy.valid) {
+            return {
+              mode: 'draft',
+              status: 'system_prompt_violation',
+              title: sanitizedTitle,
+              originalTitle: args.title || '',
+              sanitizedTitle,
+              hasSanitizedTitle,
+              tags: args.tags || '',
+              category: Number(args.category) || 0,
+              violations: policy.violations,
+              warnings: policy.warnings,
+              rules: policy.rules,
+              policyFile: policy.policyFile,
+              message: 'system-prompt.md 규격 위반으로 임시저장도 중단되었습니다. 위반 항목을 보완해 주세요.',
+              promptLoadedLength: policy.policyLoadedLength,
+            };
+          }
+
+          return provider.saveDraft({
+            title: sanitizedTitle,
+            content: args.content,
+            tags: args.tags || '',
+            category: Number(args.category) || 0,
+            relatedImageKeywords: args.relatedImageKeywords || [],
+            imageUrls: args.imageUrls || [],
+            imageUploadLimit: Number(args.imageUploadLimit),
+            autoUploadImages: args.autoUploadImages,
+          });
+        },
+        viruagent_read_post: () => provider.getPost({
+          postId: args.postId,
+          includeDraft: Boolean(args.includeDraft),
         }),
         viruagent_list_categories: () => provider.listCategories(),
         viruagent_list_posts: () => provider.listPosts({ limit: Number(args.limit) || 20 }),

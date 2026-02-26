@@ -8,6 +8,7 @@ const { saveProviderMeta, clearProviderMeta, getProviderMeta } = require('../sto
 
 const tistoryPath = path.join(__dirname, '../../../viruagent/src/lib/tistory.js');
 const tistory = require(tistoryPath);
+const tistorySessionPath = path.join(path.dirname(tistoryPath), '..', '..', 'data', 'session.json');
 
 const LOGIN_SELECTORS = {
   username: [
@@ -231,35 +232,143 @@ const buildImageFileName = (keyword, ext = 'jpg') => {
 
 const buildTistoryImageTag = (uploadedImage, keyword) => {
   const alt = String(keyword || '').replace(/"/g, '&quot;');
-  if (uploadedImage?.uploadedUrl) {
-    return `<p data-ke-size="size16"><img src="${uploadedImage.uploadedUrl}" alt="${alt}" /></p>`;
+  const normalizedKage = normalizeUploadedImageThumbnail(uploadedImage);
+  if (normalizedKage) {
+    return `<p data-ke-size="size16">[##_Image|${normalizedKage}|CDM|1.3|{"originWidth":0,"originHeight":0,"style":"alignCenter"}_##]</p>`;
   }
-
   if (uploadedImage?.uploadedKage) {
     return `<p data-ke-size="size16">[##_Image|${uploadedImage.uploadedKage}|CDM|1.3|{"originWidth":0,"originHeight":0,"style":"alignCenter"}_##]</p>`;
+  }
+  if (uploadedImage?.uploadedUrl) {
+    return `<p data-ke-size="size16"><img src="${uploadedImage.uploadedUrl}" alt="${alt}" /></p>`;
   }
 
   return `<p data-ke-size="size16"><img src="${uploadedImage.uploadedUrl}" alt="${alt}" /></p>`;
 };
 
-const normalizeThumbnailForPublish = (value) => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
+const normalizeKageFromUrl = (value) => {
+  const trimmed = String(value || '').trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith('kage@')) return trimmed;
 
-  const dnaMatch = trimmed.match(/\/dna\/(.+?)(?:[/?#]|$)/);
-  if (dnaMatch?.[1]) {
-    return `kage@${dnaMatch[1]}`;
+  if (trimmed.startsWith('kage@')) {
+    return trimmed.replace(/["'`> )\]]+$/u, '');
   }
 
-  if (!trimmed.includes('://') && trimmed.includes('/')) {
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname || '';
+    const dnaIndex = path.indexOf('/dna/');
+    if (dnaIndex >= 0) {
+      const keyPath = path.slice(dnaIndex + '/dna/'.length).replace(/^\/+/, '');
+      if (keyPath) {
+        return `kage@${keyPath}${parsed.search || ''}`;
+      }
+    }
+  } catch {
+    // URL 파싱이 실패하면 기존 정규식 경로로 폴백
+  }
+
+  const directKageMatch = trimmed.match(/kage@([^|\s\]>"']+)/u);
+  if (directKageMatch?.[1]) {
+    return `kage@${directKageMatch[1]}`;
+  }
+
+  const dnaMatch = trimmed.match(/\/dna\/([^?#\s]+)/u);
+  if (dnaMatch?.[1]) {
+    return `kage@${dnaMatch[1].replace(/["'`> )\]]+$/u, '')}`;
+  }
+
+  const rawPathMatch = trimmed.match(/([^/?#\s]+\.[A-Za-z0-9]+)$/u);
+  if (rawPathMatch?.[0] && !trimmed.includes('://') && trimmed.includes('/')) {
     return `kage@${trimmed}`;
   }
 
+  if (!trimmed.includes('://') && !trimmed.includes(' ')) {
+    if (trimmed.startsWith('kage@') || trimmed.includes('/')) {
+      return `kage@${trimmed}`;
+    }
+  }
+
   return null;
+};
+
+const normalizeThumbnailForPublish = (value) => {
+  const normalized = normalizeKageFromUrl(value);
+  if (!normalized) return null;
+
+  const body = normalized.replace(/^kage@/i, '');
+  const [pathPart, queryPart] = body.split('?');
+  const hasImageFile = /\/[^/]+\.[A-Za-z0-9]+$/u.test(pathPart);
+  if (hasImageFile) {
+    return normalized;
+  }
+  const suffix = pathPart.endsWith('/') ? 'img.jpg' : '/img.jpg';
+  const query = queryPart ? `?${queryPart}` : '';
+  return `kage@${pathPart}${suffix}${query}`;
+};
+
+const extractKageFromCandidate = (value) => {
+  const normalized = normalizeThumbnailForPublish(value);
+  if (normalized) {
+    return normalized;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const imageTagMatch = trimmed.match(/\[##_Image\|([^|]+)\|/);
+  if (imageTagMatch?.[1]) {
+    return normalizeKageFromUrl(imageTagMatch[1]);
+  }
+
+  if (!trimmed.includes('://') && trimmed.includes('|')) {
+    const match = trimmed.match(/kage@[^\s|]+/);
+    if (match?.[0]) {
+      return match[0];
+    }
+  }
+
+  return null;
+};
+
+const normalizeUploadedImageThumbnail = (uploadedImage) => {
+  const candidates = [
+    uploadedImage?.raw?.url,
+    uploadedImage?.raw?.attachmentUrl,
+    uploadedImage?.raw?.thumbnail,
+    uploadedImage?.url,
+    uploadedImage?.uploadedKage,
+    uploadedImage?.raw?.kage,
+    uploadedImage?.raw?.uploadedKage,
+    uploadedImage?.uploadedKey,
+    uploadedImage?.raw?.key,
+    uploadedImage?.raw?.attachmentKey,
+    uploadedImage?.raw?.imageKey,
+    uploadedImage?.raw?.id,
+    uploadedImage?.uploadedUrl,
+    uploadedImage?.raw?.url,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = extractKageFromCandidate(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const extractThumbnailFromContent = (content = '') => {
+  const match = String(content).match(/\[##_Image\|([^|]+)\|/);
+  if (!match?.[1]) {
+    return null;
+  }
+  return extractKageFromCandidate(match[1]);
 };
 
 const guessExtensionFromContentType = (contentType = '') => {
@@ -374,6 +483,326 @@ const normalizeImageInputs = (inputs) => {
   return inputs.map(normalizeImageInput).filter(Boolean);
 };
 
+const fetchText = async (url, retryCount = 0) => {
+  if (!url) {
+    throw new Error('텍스트 URL이 없습니다.');
+  }
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Accept': 'text/html,application/xhtml+xml',
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`텍스트 요청 실패: ${response.status} ${response.statusText}, url=${url}`);
+    }
+
+    return response.text();
+  } catch (error) {
+    if (retryCount < 1) {
+      await sleep(700);
+      return fetchText(url, retryCount + 1);
+    }
+    throw new Error(`웹 텍스트 다운로드 실패: ${error.message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const normalizeAbsoluteUrl = (value = '', base = '') => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed, base);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
+
+const extractArticleUrlsFromContent = (content = '') => {
+  const matches = Array.from(String(content).matchAll(/<a\s+[^>]*href=(['"])(.*?)\1/gi));
+  const urls = matches
+    .map((match) => match[2])
+    .filter((href) => /^https?:\/\//i.test(href))
+    .map((href) => href.trim())
+    .filter(Boolean);
+  return Array.from(new Set(urls));
+};
+
+const extractDuckDuckGoRedirectTarget = (value = '') => {
+  const urlText = String(value || '').trim();
+  if (!urlText) return null;
+
+  try {
+    const parsed = new URL(urlText);
+    if (parsed.hostname.includes('duckduckgo.com') && parsed.pathname === '/l/') {
+      const encoded = parsed.searchParams.get('uddg');
+      if (encoded) {
+        try {
+          return decodeURIComponent(encoded);
+        } catch {
+          return encoded;
+        }
+      }
+    }
+
+    if (parsed.hostname === 'duckduckgo.com' && parsed.pathname === '/y.js') {
+      const articleLike = parsed.searchParams.get('u3') || parsed.searchParams.get('url');
+      if (articleLike) {
+        try {
+          return decodeURIComponent(articleLike);
+        } catch {
+          return articleLike;
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
+const extractImageFromHtml = (html = '', base = '') => {
+  const normalizedHtml = String(html || '');
+  const metaCandidates = [
+    /<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]*name=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]*itemprop=["']image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<link[^>]*rel=["']image_src["'][^>]*href=["']([^"']+)["'][^>]*>/i,
+  ];
+
+  for (const pattern of metaCandidates) {
+    const match = normalizedHtml.match(pattern);
+    if (match?.[1]) {
+      const url = normalizeAbsoluteUrl(match[1], base);
+      if (url && !/favicon/i.test(url) && !/logo/i.test(url)) {
+        return url;
+      }
+    }
+  }
+
+  const imageMatch = normalizedHtml.match(/<img[^>]+src=["']([^"']+)["'][^>]*>/i);
+  if (imageMatch?.[1]) {
+    const src = normalizeAbsoluteUrl(imageMatch[1], base);
+    if (src && !/logo|favicon|avatar|pixel|spacer/i.test(src)) {
+      return src;
+    }
+  }
+  return null;
+};
+
+const resolveArticleImageByUrl = async (articleUrl) => {
+  try {
+    const html = await fetchText(articleUrl);
+    const imageUrl = extractImageFromHtml(html, articleUrl);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  } catch {
+    // fallback below
+  }
+
+  try {
+    const normalizedArticleUrl = String(articleUrl).trim();
+    if (!normalizedArticleUrl) return null;
+    const normalizedForJina = normalizedArticleUrl.startsWith('https://')
+      ? normalizedArticleUrl.slice(8)
+      : normalizedArticleUrl.startsWith('http://')
+        ? normalizedArticleUrl.slice(7)
+        : normalizedArticleUrl;
+    const jinaUrl = `https://r.jina.ai/http://${normalizedForJina}`;
+    const jinaHtml = await fetchText(jinaUrl);
+    return extractImageFromHtml(jinaHtml, articleUrl);
+  } catch {
+    return null;
+  }
+};
+
+const extractSearchUrlsFromText = (markdown = '') => {
+  const matched = [];
+  const pattern = /https?:\/\/duckduckgo\.com\/l\/\?uddg=([^)\s"']+)(?:&[^)\s"']*)?/g;
+  let m = pattern.exec(markdown);
+  while (m) {
+    const decoded = extractDuckDuckGoRedirectTarget(`https://duckduckgo.com/l/?uddg=${m[1]}`);
+    if (decoded && /^https?:\/\/.+/i.test(decoded)) {
+      matched.push(decoded);
+    }
+    m = pattern.exec(markdown);
+  }
+
+  if (matched.length === 0) {
+    const directLinks = String(markdown).match(/https?:\/\/(?:www\.)?[^\\s\)\]\[]+/g) || [];
+    directLinks.forEach((link) => {
+      if (link.length > 12) {
+        matched.push(link);
+      }
+    });
+  }
+
+  return Array.from(new Set(matched));
+};
+
+const extractDuckDuckGoVqd = (html = '') => {
+  const raw = String(html || '');
+  const patterns = [
+    /vqd='([^']+)'/i,
+    /vqd="([^"]+)"/i,
+    /["']vqd["']\s*:\s*["']([^"']+)["']/i,
+    /vqd=([^&"'\\s>]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const matched = raw.match(pattern);
+    if (matched?.[1] && matched[1].trim()) {
+      return matched[1].trim();
+    }
+  }
+
+  return null;
+};
+
+const fetchDuckDuckGoImageResults = async (query = '') => {
+  try {
+    const safeKeyword = String(query || '').trim();
+    if (!safeKeyword) return [];
+    const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(safeKeyword)}&iax=images&ia=images`;
+    const searchText = await fetchText(searchUrl);
+    const vqd = extractDuckDuckGoVqd(searchText);
+    if (!vqd) return [];
+
+    const apiUrl = `https://duckduckgo.com/i.js?l=wt-wt&o=json&q=${encodeURIComponent(safeKeyword)}&vqd=${encodeURIComponent(vqd)}&ia=images&iax=images`;
+    const apiText = await fetchText(apiUrl);
+    const parsed = JSON.parse(apiText || '{}');
+    const results = Array.isArray(parsed.results) ? parsed.results : [];
+
+    const images = [];
+    for (const item of results) {
+      if (typeof item !== 'object' || !item) continue;
+      const candidates = [
+        item.image,
+        item.thumbnail,
+        item.image_thumb,
+        item.url,
+        item.original,
+      ];
+      for (const candidate of candidates) {
+        const candidateUrl = normalizeAbsoluteUrl(candidate);
+        if (candidateUrl && !/favicon|logo|sprite|pixel/i.test(candidateUrl)) {
+          images.push(candidateUrl);
+          break;
+        }
+      }
+    }
+
+    return images;
+  } catch {
+    return [];
+  }
+};
+
+const buildRandomImageCandidates = (keyword = '') => {
+  const base = sanitizeKeywordForFilename(keyword) || 'random-tech-image';
+  const timestamp = Date.now();
+  return [
+    `https://picsum.photos/seed/${base}-${timestamp}/1200/630`,
+    `https://picsum.photos/seed/${base}-${timestamp + 1}/1200/630`,
+    `https://picsum.photos/seed/${base}-${timestamp + 2}/1200/630`,
+  ];
+};
+
+const buildKeywordImageCandidates = async (keyword = '', articleCandidates = []) => {
+  const fallback = 'technology';
+  const cleaned = String(keyword || fallback).trim().toLowerCase();
+  const compacted = cleaned
+    .replace(/[^a-z0-9가-힣\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const safeKeyword = compacted || fallback;
+  const query = `${safeKeyword} 뉴스 기사 이미지`;
+  const searchCandidates = [];
+  const seen = new Set();
+
+  const collectIfImage = (imageUrl) => {
+    const resolved = normalizeAbsoluteUrl(imageUrl);
+    if (resolved && !seen.has(resolved)) {
+      seen.add(resolved);
+      searchCandidates.push(resolved);
+    }
+  };
+
+  const searchTextLinks = Array.from(new Set([
+    ...articleCandidates
+      .slice(0, 6)
+      .filter((link) => /^https?:\/\/.+/i.test(link || '')),
+  ]));
+
+  for (const link of searchTextLinks) {
+    if (searchCandidates.length >= 6) break;
+    const imageUrl = await resolveArticleImageByUrl(link);
+    if (imageUrl) {
+      collectIfImage(imageUrl);
+    }
+  }
+
+  if (searchCandidates.length < 6) {
+    const duckduckgoQueries = [
+      `${safeKeyword} 뉴스`,
+      query,
+    ];
+
+    for (const duckQuery of duckduckgoQueries) {
+      const crawlSearchUrl = `https://r.jina.ai/http://duckduckgo.com/html/?q=${encodeURIComponent(duckQuery)}`;
+      const crawlText = await fetchText(crawlSearchUrl).catch(() => '');
+      const links = extractSearchUrlsFromText(crawlText)
+        .map((link) => extractDuckDuckGoRedirectTarget(link) || link)
+        .filter((link) => /^https?:\/\/.+/i.test(link || ''))
+        .slice(0, 6);
+
+      for (const link of links) {
+        if (searchCandidates.length >= 6) break;
+        const imageUrl = await resolveArticleImageByUrl(link);
+        if (imageUrl) {
+          collectIfImage(imageUrl);
+        }
+      }
+
+      if (searchCandidates.length >= 6) break;
+    }
+  }
+
+  if (searchCandidates.length < 4) {
+    const duckImages = await fetchDuckDuckGoImageResults(`${safeKeyword} 뉴스`);
+    for (const duckImage of duckImages.slice(0, 6)) {
+      if (searchCandidates.length >= 6) break;
+      collectIfImage(duckImage);
+    }
+  }
+
+  if (searchCandidates.length === 0) {
+    for (const randomCandidate of buildRandomImageCandidates(safeKeyword)) {
+      collectIfImage(randomCandidate);
+    }
+  }
+
+  return searchCandidates.slice(0, 6);
+};
+
 const extractImagePlaceholders = (content = '') => {
   const matches = Array.from(String(content).matchAll(IMAGE_PLACEHOLDER_REGEX));
   return matches.map((match) => ({
@@ -424,9 +853,21 @@ const fetchImageBuffer = async (url, retryCount = 0) => {
     }
 
     const contentType = response.headers.get('content-type') || '';
+    const normalizedContentType = contentType.toLowerCase();
+    const finalUrl = response.url || url;
+    const looksLikeHtml = normalizedContentType.includes('text/html') || normalizedContentType.includes('application/xhtml+xml');
+    if (looksLikeHtml) {
+      const html = await response.text();
+      return {
+        html,
+        ext: 'jpg',
+        finalUrl,
+        isHtml: true,
+      };
+    }
+
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const finalUrl = response.url || url;
     const extensionFromUrl = guessExtensionFromUrl(finalUrl);
     const extensionFromSignature = getImageSignatureExtension(buffer);
     const isImage = isImageContentType(contentType)
@@ -453,8 +894,19 @@ const fetchImageBuffer = async (url, retryCount = 0) => {
   }
 };
 
-const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image') => {
+const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image', depth = 0) => {
   const downloaded = await fetchImageBuffer(remoteUrl);
+
+  if (downloaded?.isHtml && downloaded?.html) {
+    const extractedImageUrl = extractImageFromHtml(downloaded.html, downloaded.finalUrl || remoteUrl);
+    if (!extractedImageUrl) {
+      throw new Error('이미지 페이지에서 유효한 대표 이미지를 찾지 못했습니다.');
+    }
+    if (depth >= 1 || extractedImageUrl === remoteUrl) {
+      throw new Error('이미지 페이지에서 추출된 URL이 유효하지 않아 업로드를 중단했습니다.');
+    }
+    return uploadImageFromRemote(extractedImageUrl, fallbackName, depth + 1);
+  }
   const tmpDir = normalizeTempDir();
   const filename = buildImageFileName(fallbackName, downloaded.ext);
   const filePath = path.join(tmpDir, filename);
@@ -466,7 +918,7 @@ const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image') => {
   } finally {
     await fs.promises.unlink(filePath).catch(() => {});
   }
-  const uploadedKage = uploaded?.key ? `kage@${uploaded.key}` : null;
+  const uploadedKage = normalizeUploadedImageThumbnail(uploaded) || (uploaded?.key ? `kage@${uploaded.key}` : null);
 
   if (!uploaded || !(uploaded.url || uploaded.key)) {
     throw new Error('이미지 업로드 응답이 비정상적입니다.');
@@ -489,6 +941,7 @@ const replaceImagePlaceholdersWithUploaded = async (
   imageCountLimit = 3
 ) => {
   const originalContent = content || '';
+  const articleCandidates = extractArticleUrlsFromContent(originalContent);
   if (!autoUploadImages) {
     return {
       content: originalContent,
@@ -507,80 +960,124 @@ const replaceImagePlaceholdersWithUploaded = async (
 
   const normalizedKeywords = Array.isArray(relatedImageKeywords)
     ? relatedImageKeywords.map((item) => String(item || '').trim()).filter(Boolean)
-    : typeof relatedImageKeywords === 'string'
+      : typeof relatedImageKeywords === 'string'
       ? relatedImageKeywords.split(',').map((item) => item.trim()).filter(Boolean)
       : [];
 
-  if (hasPlaceholders && collectedImageUrls.length < matches.length) {
+  const uploadTargets = hasPlaceholders
+    ? await Promise.all(matches.map(async (match, index) => {
+      const keyword = match.keyword || normalizedKeywords[index] || `image-${index + 1}`;
+      const hasKeywordSource = Boolean(match.keyword || normalizedKeywords[index]);
+      const primarySources = hasKeywordSource
+        ? await buildKeywordImageCandidates(match.keyword || normalizedKeywords[index], articleCandidates)
+        : [];
+      const fallbackSources = hasKeywordSource
+        ? []
+        : await buildKeywordImageCandidates('technology', articleCandidates);
+      const keywordSources = [
+        ...primarySources,
+        ...fallbackSources,
+      ].filter(Boolean);
+      const finalSources = keywordSources.length > 0
+        ? keywordSources
+        : buildRandomImageCandidates(keyword);
+      return {
+        placeholder: match,
+        sources: [
+          ...(collectedImageUrls[index] ? [collectedImageUrls[index]] : []),
+          ...finalSources,
+        ],
+        keyword,
+      };
+    }))
+    : collectedImageUrls.slice(0, imageCountLimit).map((imageUrl, index) => ({
+      placeholder: null,
+      sources: [imageUrl],
+      keyword: normalizedKeywords[index] || `image-${index + 1}`,
+    }));
+
+  const fallbackTargets = !hasPlaceholders
+    && uploadTargets.length === 0
+    && normalizedKeywords.length > 0
+  ? await Promise.all(normalizedKeywords.slice(0, imageCountLimit).map(async (keyword, index) => ({
+      placeholder: null,
+      sources: (await buildKeywordImageCandidates(keyword, articleCandidates)).length > 0
+        ? await buildKeywordImageCandidates(keyword, articleCandidates)
+        : buildRandomImageCandidates(keyword),
+      keyword: normalizedKeywords[index] || `image-${index + 1}`,
+    })))
+    : [];
+
+  const finalUploadTargets = [...uploadTargets, ...fallbackTargets];
+  const limitedUploadTargets = finalUploadTargets.slice(0, imageCountLimit);
+
+  const normalizedRequestedKeywords = matches.map((match) => match.keyword).filter(Boolean);
+  const requestedKeywords = normalizedRequestedKeywords.length > 0 ? normalizedRequestedKeywords : normalizedKeywords;
+
+  if (hasPlaceholders && limitedUploadTargets.length === 0) {
     return {
       content: originalContent,
       uploaded: [],
       uploadedCount: 0,
       status: 'need_image_urls',
-      message: 'IMAGE 플레이스홀더 수와 imageUrls 수가 다릅니다. placeholder당 이미지 URL을 제공해 주세요.',
-      requiredImageUrls: matches.map((match) => ({
-        keyword: match.keyword || null,
-      })),
-      requestedKeywords: matches.map((match) => match.keyword).filter(Boolean),
+      message: '이미지 플레이스홀더와 관련 키워드가 없습니다. imageUrls 또는 relatedImageKeywords를 제공해 주세요.',
+      requestedKeywords,
       requestedCount: matches.length,
       providedImageUrls: collectedImageUrls.length,
     };
   }
 
-  if (!hasPlaceholders && collectedImageUrls.length === 0 && normalizedKeywords.length > 0) {
-    return {
-      content: originalContent,
-      uploaded: [],
-      uploadedCount: 0,
-      status: 'need_image_urls',
-      message: '이미지 키워드가 있어도 imageUrls가 없습니다. 외부에서 키워드 수집 후 imageUrls를 전달해 주세요.',
-      requestedKeywords: normalizedKeywords,
-      requestedCount: normalizedKeywords.length,
-      providedImageUrls: 0,
-    };
-  }
+  for (let i = 0; i < limitedUploadTargets.length; i += 1) {
+    const target = limitedUploadTargets[i];
+    const uniqueSources = Array.from(new Set(target.sources.filter(Boolean)));
+    let uploadedImage = null;
+    let lastMessage = '';
+    let success = false;
 
-  const uploadTargets = hasPlaceholders
-    ? matches.map((match, index) => ({
-      placeholder: match,
-      url: collectedImageUrls[index] || null,
-      keyword: match.keyword || `image-${index + 1}`,
-    }))
-    : collectedImageUrls.slice(0, imageCountLimit).map((imageUrl, index) => ({
-      placeholder: null,
-      url: imageUrl,
-      keyword: normalizedKeywords[index] || `image-${index + 1}`,
-    }));
-
-  for (let i = 0; i < uploadTargets.length; i += 1) {
-    const target = uploadTargets[i];
-    const sourceUrl = target.url;
-    if (!sourceUrl) {
+    if (uniqueSources.length === 0) {
+      uploadErrors.push({
+        index: i,
+        sourceUrl: null,
+        keyword: target.keyword,
+        message: '이미지 소스가 없습니다.',
+      });
       continue;
     }
 
-    try {
-      const uploadedImage = await uploadImageFromRemote(sourceUrl, target.keyword);
-      const tag = buildTistoryImageTag(uploadedImage, target.keyword);
-      if (target.placeholder && target.placeholder.raw) {
-        const replaced = new RegExp(escapeRegExp(target.placeholder.raw), 'g');
-        updatedContent = updatedContent.replace(replaced, tag);
-      } else {
-        updatedContent = `${tag}\n${updatedContent}`;
+    for (let sourceIndex = 0; sourceIndex < uniqueSources.length; sourceIndex += 1) {
+      const sourceUrl = uniqueSources[sourceIndex];
+      try {
+        uploadedImage = await uploadImageFromRemote(sourceUrl, target.keyword);
+        success = true;
+        break;
+      } catch (error) {
+        lastMessage = error.message;
+        console.log('이미지 처리 실패:', sourceUrl, error.message);
       }
-      uploadedImages.push(uploadedImage);
-    } catch (error) {
-      console.log('이미지 처리 실패:', sourceUrl, error.message);
+    }
+
+    if (!success) {
       uploadErrors.push({
         index: i,
-        sourceUrl,
+        sourceUrl: uniqueSources[0],
         keyword: target.keyword,
-        message: error.message,
+        message: `이미지 업로드 실패(대체 이미지 재시도 포함): ${lastMessage}`,
       });
+      continue;
     }
+
+    const tag = buildTistoryImageTag(uploadedImage, target.keyword);
+    if (target.placeholder && target.placeholder.raw) {
+      const replaced = new RegExp(escapeRegExp(target.placeholder.raw), 'g');
+      updatedContent = updatedContent.replace(replaced, tag);
+    } else {
+      updatedContent = `${tag}\n${updatedContent}`;
+    }
+
+    uploadedImages.push(uploadedImage);
   }
 
-  if (hasPlaceholders && collectedImageUrls.length > 0 && uploadedImages.length === 0) {
+  if (hasPlaceholders && uploadedImages.length === 0) {
     return {
       content: originalContent,
       uploaded: [],
@@ -706,17 +1203,44 @@ const waitForLoginFinish = async (page, context, timeoutMs = 45000) => {
 const withProviderSession = async (sessionPath, fn) => {
   const prev = process.env.VIRUAGENT_SESSION_PATH;
   process.env.VIRUAGENT_SESSION_PATH = path.resolve(sessionPath);
-  tistory.resetState();
+  if (typeof tistory.resetState === 'function') {
+    tistory.resetState();
+  }
   try {
     return await fn();
   } finally {
-    tistory.resetState();
+    if (typeof tistory.resetState === 'function') {
+      tistory.resetState();
+    }
     if (prev) {
       process.env.VIRUAGENT_SESSION_PATH = prev;
     } else {
       delete process.env.VIRUAGENT_SESSION_PATH;
     }
   }
+};
+
+const persistTistorySession = async (context, targetSessionPath = tistorySessionPath) => {
+  const cookies = await context.cookies('https://www.tistory.com');
+  const sanitized = cookies.map((cookie) => ({
+    ...cookie,
+    expires: Number(cookie.expires || -1),
+    size: undefined,
+    partitionKey: undefined,
+    sourcePort: undefined,
+    sourceScheme: undefined,
+  }));
+
+  const payload = {
+    cookies: sanitized,
+    updatedAt: new Date().toISOString(),
+  };
+  await fs.promises.mkdir(path.dirname(targetSessionPath), { recursive: true });
+  await fs.promises.writeFile(
+    targetSessionPath,
+    JSON.stringify(payload, null, 2),
+    'utf-8'
+  );
 };
 
 const createTistoryProvider = ({ sessionPath }) => {
@@ -885,6 +1409,7 @@ const createTistoryProvider = ({ sessionPath }) => {
       }
 
       await context.storageState({ path: sessionPath });
+      await persistTistorySession(context);
 
       return withProviderSession(sessionPath, async () => {
         const blogName = await tistory.initBlog();
@@ -1015,7 +1540,12 @@ const createTistoryProvider = ({ sessionPath }) => {
         }
         const content = enrichedImages.content;
         const resolvedThumbnail = normalizeThumbnailForPublish(rawThumbnail);
-        const fallbackThumbnail = enrichedImages?.uploaded?.[0]?.uploadedKage || null;
+        const uploadedImages = enrichedImages?.images || enrichedImages?.uploaded || [];
+        const fallbackThumbnail = uploadedImages
+          .map((image) => normalizeUploadedImageThumbnail(image))
+          .find(Boolean)
+          || extractThumbnailFromContent(content)
+          || null;
 
         await tistory.initBlog();
         const rawCategories = await tistory.getCategories();
@@ -1124,7 +1654,10 @@ const createTistoryProvider = ({ sessionPath }) => {
             draftContent: content,
             draftSequence: draftResult.draft?.sequence || null,
             message: '발행 제한(403)으로 인해 임시저장으로 전환했습니다.',
-            fallbackThumbnail: resolvedThumbnail || (enrichedImages.images?.[0]?.uploadedKage) || null,
+            fallbackThumbnail: resolvedThumbnail
+              || uploadedImages?.map((image) => normalizeUploadedImageThumbnail(image)).find(Boolean)
+              || extractThumbnailFromContent(content)
+              || null,
             raw: draftResult,
           };
         }
@@ -1183,7 +1716,11 @@ const createTistoryProvider = ({ sessionPath }) => {
         }
 
         const content = enrichedImages.content;
-        const fallbackThumbnail = enrichedImages?.images?.[0]?.uploadedKage || null;
+        const fallbackThumbnail = enrichedImages?.images
+          ?.map((image) => normalizeUploadedImageThumbnail(image))
+          .find(Boolean)
+          || extractThumbnailFromContent(content)
+          || null;
         const thumbnail = normalizeThumbnailForPublish(rawThumbnail) || fallbackThumbnail || null;
 
         await tistory.initBlog();
@@ -1222,12 +1759,40 @@ const createTistoryProvider = ({ sessionPath }) => {
 
     async listPosts({ limit = 20 } = {}) {
       return withProviderSession(sessionPath, async () => {
+        await tistory.initBlog();
         const result = await tistory.getPosts();
         const items = Array.isArray(result?.items) ? result.items : [];
         return {
           provider: 'tistory',
           totalCount: result.totalCount || items.length,
           posts: items.slice(0, Math.max(1, Number(limit) || 20)),
+        };
+      });
+    },
+
+    async getPost({ postId, includeDraft = false } = {}) {
+      return withProviderSession(sessionPath, async () => {
+        const resolvedPostId = String(postId || '').trim();
+        if (!resolvedPostId) {
+          return {
+            provider: 'tistory',
+            mode: 'post',
+            status: 'invalid_post_id',
+            message: 'postId가 필요합니다.',
+          };
+        }
+
+        await tistory.initBlog();
+        const post = await tistory.getPost({
+          postId: resolvedPostId,
+          includeDraft: Boolean(includeDraft),
+        });
+        return {
+          provider: 'tistory',
+          mode: 'post',
+          postId: resolvedPostId,
+          post,
+          includeDraft: Boolean(includeDraft),
         };
       });
     },
