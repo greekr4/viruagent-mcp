@@ -121,8 +121,15 @@ const createServer = () => {
             },
             imageUploadLimit: {
               type: 'number',
-              default: 3,
+              default: 5,
               description: '자동 업로드할 이미지 최대 개수',
+              maximum: 5,
+            },
+            minimumImageCount: {
+              type: 'number',
+              default: 3,
+              description: '최소 업로드 이미지 개수',
+              maximum: 5,
             },
             autoUploadImages: {
               type: 'boolean',
@@ -165,8 +172,15 @@ const createServer = () => {
             },
             imageUploadLimit: {
               type: 'number',
-              default: 3,
+              default: 5,
               description: '자동 업로드할 이미지 최대 개수',
+              maximum: 5,
+            },
+            minimumImageCount: {
+              type: 'number',
+              default: 3,
+              description: '최소 업로드 이미지 개수',
+              maximum: 5,
             },
             autoUploadImages: {
               type: 'boolean',
@@ -322,6 +336,7 @@ const createServer = () => {
             relatedImageKeywords: args.relatedImageKeywords || [],
             imageUrls: args.imageUrls || [],
             imageUploadLimit: Number(args.imageUploadLimit),
+            minimumImageCount: Number(args.minimumImageCount),
             autoUploadImages: args.autoUploadImages,
           });
         },
@@ -365,6 +380,7 @@ const createServer = () => {
             relatedImageKeywords: args.relatedImageKeywords || [],
             imageUrls: args.imageUrls || [],
             imageUploadLimit: Number(args.imageUploadLimit),
+            minimumImageCount: Number(args.minimumImageCount),
             autoUploadImages: args.autoUploadImages,
           });
         },

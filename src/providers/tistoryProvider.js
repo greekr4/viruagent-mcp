@@ -5,42 +5,14 @@ const crypto = require('crypto');
 const path = require('path');
 const readline = require('readline');
 const { saveProviderMeta, clearProviderMeta, getProviderMeta } = require('../storage/sessionStore');
+const createTistoryApiClient = require('../services/tistoryApiClient');
 
-const tistoryPath = path.join(__dirname, '../../../viruagent/src/lib/tistory.js');
-const tistory = require(tistoryPath);
-const tistorySessionPath = path.join(path.dirname(tistoryPath), '..', '..', 'data', 'session.json');
-
-const LOGIN_SELECTORS = {
-  username: [
-    'input[name="id"]',
-    'input[name="userId"]',
-    'input[type="text"][placeholder*="아이디"]',
-    'input[type="text"][autocomplete="username"]',
-    '#id',
-    '#loginId',
-  ],
-  password: [
-    'input[type="password"]',
-    'input[name="password"]',
-    'input[name="userPw"]',
-    'input[autocomplete="current-password"]',
-    '#password',
-    '#loginPw',
-  ],
-  submit: [
-    'button[type="submit"]',
-    'button:has-text("로그인")',
-    'input[type="submit"]',
-    '#account-login-btn',
-    'button#loginBtn',
-  ],
-  otp: [
+const LOGIN_OTP_SELECTORS = [
     'input[name*="otp"]',
     'input[placeholder*="인증"]',
     'input[autocomplete="one-time-code"]',
     'input[name*="code"]',
-  ],
-};
+];
 
 const KAKAO_TRIGGER_SELECTORS = [
   'a.link_kakao_id',
@@ -79,6 +51,8 @@ const KAKAO_ACCOUNT_CONFIRM_SELECTORS = {
   ],
 };
 
+const MAX_IMAGE_UPLOAD_COUNT = 5;
+
 const readCredentialsFromEnv = () => {
   const username = process.env.TISTORY_USERNAME || process.env.TISTORY_USER || process.env.TISTORY_ID;
   const password = process.env.TISTORY_PASSWORD || process.env.TISTORY_PW;
@@ -96,6 +70,20 @@ const mapVisibility = (visibility) => {
   if (normalized === 'private') return 0;
   if (normalized === 'protected') return 15;
   return 20;
+};
+
+const normalizeTagList = (value = '') => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').replace(/\r?\n/g, ',').split(',');
+
+  return source
+    .map((tag) => String(tag || '').trim())
+    .filter(Boolean)
+    .map((tag) => tag.replace(/["']/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 10)
+    .join(',');
 };
 
 const isPublishLimitError = (error) => {
@@ -261,7 +249,7 @@ const normalizeKageFromUrl = (value) => {
     if (dnaIndex >= 0) {
       const keyPath = path.slice(dnaIndex + '/dna/'.length).replace(/^\/+/, '');
       if (keyPath) {
-        return `kage@${keyPath}${parsed.search || ''}`;
+        return `kage@${keyPath}`;
       }
     }
   } catch {
@@ -276,6 +264,10 @@ const normalizeKageFromUrl = (value) => {
   const dnaMatch = trimmed.match(/\/dna\/([^?#\s]+)/u);
   if (dnaMatch?.[1]) {
     return `kage@${dnaMatch[1].replace(/["'`> )\]]+$/u, '')}`;
+  }
+
+  if (/^[A-Za-z0-9_-]{10,}$/u.test(trimmed)) {
+    return `kage@${trimmed}`;
   }
 
   const rawPathMatch = trimmed.match(/([^/?#\s]+\.[A-Za-z0-9]+)$/u);
@@ -294,17 +286,35 @@ const normalizeKageFromUrl = (value) => {
 
 const normalizeThumbnailForPublish = (value) => {
   const normalized = normalizeKageFromUrl(value);
-  if (!normalized) return null;
+  if (!normalized) {
+    return normalizeImageUrlForThumbnail(value);
+  }
 
-  const body = normalized.replace(/^kage@/i, '');
-  const [pathPart, queryPart] = body.split('?');
+  const body = normalized.replace(/^kage@/i, '').split(/[?#]/)[0];
+  const pathPart = body?.trim();
+  if (!pathPart) return null;
   const hasImageFile = /\/[^/]+\.[A-Za-z0-9]+$/u.test(pathPart);
   if (hasImageFile) {
-    return normalized;
+    return `kage@${pathPart}`;
   }
   const suffix = pathPart.endsWith('/') ? 'img.jpg' : '/img.jpg';
-  const query = queryPart ? `?${queryPart}` : '';
-  return `kage@${pathPart}${suffix}${query}`;
+  return `kage@${pathPart}${suffix}`;
+};
+
+const normalizeImageUrlForThumbnail = (value) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return null;
+  }
+  if (trimmed.includes('data:image')) {
+    return null;
+  }
+  if (trimmed.includes(' ') || trimmed.length < 10) {
+    return null;
+  }
+  const imageExtensionMatch = trimmed.match(/\.(?:jpg|jpeg|png|gif|webp|bmp|avif|svg)(?:$|\?|#)/i);
+  return imageExtensionMatch ? trimmed : null;
 };
 
 const extractKageFromCandidate = (value) => {
@@ -337,10 +347,6 @@ const extractKageFromCandidate = (value) => {
 
 const normalizeUploadedImageThumbnail = (uploadedImage) => {
   const candidates = [
-    uploadedImage?.raw?.url,
-    uploadedImage?.raw?.attachmentUrl,
-    uploadedImage?.raw?.thumbnail,
-    uploadedImage?.url,
     uploadedImage?.uploadedKage,
     uploadedImage?.raw?.kage,
     uploadedImage?.raw?.uploadedKage,
@@ -349,18 +355,62 @@ const normalizeUploadedImageThumbnail = (uploadedImage) => {
     uploadedImage?.raw?.attachmentKey,
     uploadedImage?.raw?.imageKey,
     uploadedImage?.raw?.id,
-    uploadedImage?.uploadedUrl,
     uploadedImage?.raw?.url,
+    uploadedImage?.raw?.attachmentUrl,
+    uploadedImage?.raw?.thumbnail,
+    uploadedImage?.url,
+    uploadedImage?.uploadedUrl,
   ];
 
   for (const candidate of candidates) {
     const normalized = extractKageFromCandidate(candidate);
     if (normalized) {
-      return normalized;
+      const final = normalizeThumbnailForPublish(normalized);
+      if (final) {
+        return final;
+      }
     }
   }
 
   return null;
+};
+
+const dedupeTextValues = (values = []) => {
+  const seen = new Set();
+  return values
+    .filter(Boolean)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .filter((value) => {
+      if (seen.has(value)) {
+        return false;
+      }
+      seen.add(value);
+      return true;
+    });
+};
+
+const dedupeImageSources = (sources = []) => {
+  const seen = new Set();
+  return sources
+    .filter(Boolean)
+    .map((source) => String(source || '').trim())
+    .filter(Boolean)
+    .filter((source) => {
+      if (seen.has(source)) {
+        return false;
+      }
+      seen.add(source);
+      return true;
+    });
+};
+
+const buildFallbackImageSources = (keyword = '') => {
+  const fallbackKeyword = String(keyword || 'image').trim() || 'image';
+  return [
+    ...buildRandomImageCandidates(fallbackKeyword),
+    ...buildRandomImageCandidates('technology'),
+  ];
 };
 
 const extractThumbnailFromContent = (content = '') => {
@@ -894,7 +944,7 @@ const fetchImageBuffer = async (url, retryCount = 0) => {
   }
 };
 
-const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image', depth = 0) => {
+const uploadImageFromRemote = async (api, remoteUrl, fallbackName = 'image', depth = 0) => {
   const downloaded = await fetchImageBuffer(remoteUrl);
 
   if (downloaded?.isHtml && downloaded?.html) {
@@ -905,7 +955,7 @@ const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image', depth = 
     if (depth >= 1 || extractedImageUrl === remoteUrl) {
       throw new Error('이미지 페이지에서 추출된 URL이 유효하지 않아 업로드를 중단했습니다.');
     }
-    return uploadImageFromRemote(extractedImageUrl, fallbackName, depth + 1);
+    return uploadImageFromRemote(api, extractedImageUrl, fallbackName, depth + 1);
   }
   const tmpDir = normalizeTempDir();
   const filename = buildImageFileName(fallbackName, downloaded.ext);
@@ -914,7 +964,7 @@ const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image', depth = 
   await fs.promises.writeFile(filePath, downloaded.buffer);
   let uploaded;
   try {
-    uploaded = await tistory.uploadImage(downloaded.buffer, filename);
+    uploaded = await api.uploadImage(downloaded.buffer, filename);
   } finally {
     await fs.promises.unlink(filePath).catch(() => {});
   }
@@ -934,11 +984,13 @@ const uploadImageFromRemote = async (remoteUrl, fallbackName = 'image', depth = 
 };
 
 const replaceImagePlaceholdersWithUploaded = async (
+  api,
   content,
   autoUploadImages,
   relatedImageKeywords = [],
   imageUrls = [],
-  imageCountLimit = 3
+  imageCountLimit = 5,
+  minimumImageCount = 3
 ) => {
   const originalContent = content || '';
   const articleCandidates = extractArticleUrlsFromContent(originalContent);
@@ -963,6 +1015,20 @@ const replaceImagePlaceholdersWithUploaded = async (
       : typeof relatedImageKeywords === 'string'
       ? relatedImageKeywords.split(',').map((item) => item.trim()).filter(Boolean)
       : [];
+  const normalizedImageUploadLimit = Number.isFinite(Number(imageCountLimit)) && Number(imageCountLimit) > 0
+    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(imageCountLimit))
+    : MAX_IMAGE_UPLOAD_COUNT;
+  const safeMinimumImageCount = Number.isFinite(Number(minimumImageCount)) && Number(minimumImageCount) >= 0
+    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(minimumImageCount))
+    : 3;
+  const safeImageUploadLimit = Math.max(normalizedImageUploadLimit, safeMinimumImageCount);
+  const targetImageCount = Math.min(
+    safeImageUploadLimit,
+    Math.max(
+      hasPlaceholders ? matches.length : 0,
+      safeMinimumImageCount
+    )
+  );
 
   const uploadTargets = hasPlaceholders
     ? await Promise.all(matches.map(async (match, index) => {
@@ -990,29 +1056,44 @@ const replaceImagePlaceholdersWithUploaded = async (
         keyword,
       };
     }))
-    : collectedImageUrls.slice(0, imageCountLimit).map((imageUrl, index) => ({
+    : collectedImageUrls.slice(0, targetImageCount).map((imageUrl, index) => ({
       placeholder: null,
       sources: [imageUrl],
       keyword: normalizedKeywords[index] || `image-${index + 1}`,
     }));
 
-  const fallbackTargets = !hasPlaceholders
-    && uploadTargets.length === 0
-    && normalizedKeywords.length > 0
-  ? await Promise.all(normalizedKeywords.slice(0, imageCountLimit).map(async (keyword, index) => ({
-      placeholder: null,
-      sources: (await buildKeywordImageCandidates(keyword, articleCandidates)).length > 0
+  const missingTargets = Math.max(0, targetImageCount - uploadTargets.length);
+  const fallbackBaseKeywords = normalizedKeywords.length > 0 ? normalizedKeywords : ['technology', 'news', 'issue', 'thumbnail'];
+  const fallbackTargets = missingTargets > 0
+    ? await Promise.all(Array.from({ length: missingTargets }).map(async (_, index) => {
+      const keyword = fallbackBaseKeywords[index] || fallbackBaseKeywords[fallbackBaseKeywords.length - 1];
+      const sources = (await buildKeywordImageCandidates(keyword, articleCandidates)).length > 0
         ? await buildKeywordImageCandidates(keyword, articleCandidates)
-        : buildRandomImageCandidates(keyword),
-      keyword: normalizedKeywords[index] || `image-${index + 1}`,
-    })))
+        : buildRandomImageCandidates(keyword);
+      return {
+        placeholder: null,
+        sources,
+        keyword: keyword || `image-${uploadTargets.length + index + 1}`,
+      };
+    }))
     : [];
 
   const finalUploadTargets = [...uploadTargets, ...fallbackTargets];
-  const limitedUploadTargets = finalUploadTargets.slice(0, imageCountLimit);
+  const limitedUploadTargets = finalUploadTargets.slice(0, targetImageCount);
+  const requestedImageCount = targetImageCount;
+  const resolvedRequestedKeywords = dedupeTextValues(
+    hasPlaceholders
+      ? [
+          ...matches.map((match) => match.keyword).filter(Boolean),
+          ...finalUploadTargets.map((target) => target.keyword).filter(Boolean),
+          ...normalizedKeywords,
+        ]
+      : normalizedKeywords
+  );
 
-  const normalizedRequestedKeywords = matches.map((match) => match.keyword).filter(Boolean);
-  const requestedKeywords = normalizedRequestedKeywords.length > 0 ? normalizedRequestedKeywords : normalizedKeywords;
+  const requestedKeywords = resolvedRequestedKeywords.length > 0
+    ? resolvedRequestedKeywords
+    : normalizedKeywords;
 
   if (hasPlaceholders && limitedUploadTargets.length === 0) {
     return {
@@ -1022,14 +1103,14 @@ const replaceImagePlaceholdersWithUploaded = async (
       status: 'need_image_urls',
       message: '이미지 플레이스홀더와 관련 키워드가 없습니다. imageUrls 또는 relatedImageKeywords를 제공해 주세요.',
       requestedKeywords,
-      requestedCount: matches.length,
+      requestedCount: requestedImageCount,
       providedImageUrls: collectedImageUrls.length,
     };
   }
 
   for (let i = 0; i < limitedUploadTargets.length; i += 1) {
     const target = limitedUploadTargets[i];
-    const uniqueSources = Array.from(new Set(target.sources.filter(Boolean)));
+    const uniqueSources = dedupeImageSources(target.sources);
     let uploadedImage = null;
     let lastMessage = '';
     let success = false;
@@ -1047,12 +1128,34 @@ const replaceImagePlaceholdersWithUploaded = async (
     for (let sourceIndex = 0; sourceIndex < uniqueSources.length; sourceIndex += 1) {
       const sourceUrl = uniqueSources[sourceIndex];
       try {
-        uploadedImage = await uploadImageFromRemote(sourceUrl, target.keyword);
+        uploadedImage = await uploadImageFromRemote(api, sourceUrl, target.keyword);
         success = true;
         break;
       } catch (error) {
         lastMessage = error.message;
         console.log('이미지 처리 실패:', sourceUrl, error.message);
+      }
+    }
+
+    if (!success) {
+      const fallbackSources = dedupeImageSources([
+        ...uniqueSources,
+        ...buildFallbackImageSources(target.keyword),
+      ]);
+
+      for (let sourceIndex = 0; sourceIndex < fallbackSources.length; sourceIndex += 1) {
+        const sourceUrl = fallbackSources[sourceIndex];
+        if (uniqueSources.includes(sourceUrl)) {
+          continue;
+        }
+        try {
+          uploadedImage = await uploadImageFromRemote(api, sourceUrl, target.keyword);
+          success = true;
+          break;
+        } catch (error) {
+          lastMessage = error.message;
+          console.log('이미지 처리 실패(보정 소스):', sourceUrl, error.message);
+        }
       }
     }
 
@@ -1078,20 +1181,37 @@ const replaceImagePlaceholdersWithUploaded = async (
   }
 
   if (hasPlaceholders && uploadedImages.length === 0) {
-    return {
-      content: originalContent,
-      uploaded: [],
-      uploadedCount: 0,
-      status: 'image_upload_failed',
-      message: '이미지 업로드에 실패했습니다. 수집한 이미지 URL을 확인해 다시 호출해 주세요.',
-      errors: uploadErrors,
-      requestedKeywords: matches.map((match) => match.keyword).filter(Boolean),
-      requestedCount: matches.length,
-      providedImageUrls: collectedImageUrls.length,
-    };
-  }
+      return {
+        content: originalContent,
+        uploaded: [],
+        uploadedCount: 0,
+        status: 'image_upload_failed',
+        message: '이미지 업로드에 실패했습니다. 수집한 이미지 URL을 확인해 다시 호출해 주세요.',
+        errors: uploadErrors,
+        requestedKeywords,
+        requestedCount: requestedImageCount,
+        providedImageUrls: collectedImageUrls.length,
+      };
+    }
 
   if (uploadErrors.length > 0) {
+    if (uploadedImages.length < Math.max(1, safeMinimumImageCount)) {
+      return {
+        content: updatedContent,
+        uploaded: uploadedImages,
+        uploadedCount: uploadedImages.length,
+        status: 'insufficient_images',
+        message: `최소 이미지 업로드 장수를 충족하지 못했습니다. (요청: ${safeMinimumImageCount} / 실제: ${uploadedImages.length})`,
+        errors: uploadErrors,
+        requestedKeywords,
+        requestedCount: requestedImageCount,
+        uploadedPlaceholders: uploadedImages.length,
+        providedImageUrls: collectedImageUrls.length,
+        missingImageCount: Math.max(0, safeMinimumImageCount - uploadedImages.length),
+        imageLimit: safeImageUploadLimit,
+      };
+    }
+
     return {
       content: updatedContent,
       uploaded: uploadedImages,
@@ -1099,9 +1219,26 @@ const replaceImagePlaceholdersWithUploaded = async (
       status: 'image_upload_partial',
       message: '일부 이미지 업로드가 실패했습니다.',
       errors: uploadErrors,
-      requestedCount: matches.length,
+      requestedCount: requestedImageCount,
       uploadedPlaceholders: uploadedImages.length,
       providedImageUrls: collectedImageUrls.length,
+    };
+  }
+
+  if (safeMinimumImageCount > 0 && uploadedImages.length < safeMinimumImageCount) {
+    return {
+      content: updatedContent,
+      uploaded: uploadedImages,
+      uploadedCount: uploadedImages.length,
+      status: 'insufficient_images',
+      message: `최소 이미지 업로드 장수를 충족하지 못했습니다. (요청: ${safeMinimumImageCount} / 실제: ${uploadedImages.length})`,
+      errors: uploadErrors,
+      requestedKeywords,
+      requestedCount: requestedImageCount,
+      uploadedPlaceholders: uploadedImages.length,
+      providedImageUrls: collectedImageUrls.length,
+      missingImageCount: Math.max(0, safeMinimumImageCount - uploadedImages.length),
+      imageLimit: safeImageUploadLimit,
     };
   }
 
@@ -1114,23 +1251,30 @@ const replaceImagePlaceholdersWithUploaded = async (
 };
 
 const enrichContentWithUploadedImages = async ({
+  api,
   rawContent,
   autoUploadImages,
   relatedImageKeywords = [],
   imageUrls = [],
-  imageUploadLimit = 3,
+  imageUploadLimit = 5,
+  minimumImageCount = 3,
 }) => {
   const safeImageUploadLimit = Number.isFinite(Number(imageUploadLimit)) && Number(imageUploadLimit) > 0
-    ? Number(imageUploadLimit)
+    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(imageUploadLimit))
+    : MAX_IMAGE_UPLOAD_COUNT;
+  const safeMinimumImageCount = Number.isFinite(Number(minimumImageCount)) && Number(minimumImageCount) >= 0
+    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(minimumImageCount))
     : 3;
 
   const shouldAutoUpload = autoUploadImages !== false;
   const enrichedImages = await replaceImagePlaceholdersWithUploaded(
+    api,
     rawContent,
     shouldAutoUpload,
     relatedImageKeywords,
     imageUrls,
-    safeImageUploadLimit
+    safeImageUploadLimit,
+    safeMinimumImageCount
   );
 
   if (enrichedImages.status === 'need_image_urls') {
@@ -1145,6 +1289,24 @@ const enrichContentWithUploadedImages = async ({
       imageCount: enrichedImages.uploadedCount,
       uploadedCount: enrichedImages.uploadedCount,
       uploadErrors: enrichedImages.errors || [],
+    };
+  }
+
+  if (enrichedImages.status === 'insufficient_images') {
+    return {
+      status: 'insufficient_images',
+      message: enrichedImages.message,
+      imageCount: enrichedImages.uploadedCount,
+      requestedCount: enrichedImages.requestedCount,
+      uploadedCount: enrichedImages.uploadedCount,
+      images: enrichedImages.uploaded || [],
+      content: enrichedImages.content,
+      uploadErrors: enrichedImages.errors || [],
+      providedImageUrls: enrichedImages.providedImageUrls,
+      requestedKeywords: enrichedImages.requestedKeywords || [],
+      missingImageCount: enrichedImages.missingImageCount || 0,
+      imageLimit: enrichedImages.imageLimit || safeImageUploadLimit,
+      minimumImageCount: safeMinimumImageCount,
     };
   }
 
@@ -1200,27 +1362,11 @@ const waitForLoginFinish = async (page, context, timeoutMs = 45000) => {
   return false;
 };
 
-const withProviderSession = async (sessionPath, fn) => {
-  const prev = process.env.VIRUAGENT_SESSION_PATH;
-  process.env.VIRUAGENT_SESSION_PATH = path.resolve(sessionPath);
-  if (typeof tistory.resetState === 'function') {
-    tistory.resetState();
-  }
-  try {
-    return await fn();
-  } finally {
-    if (typeof tistory.resetState === 'function') {
-      tistory.resetState();
-    }
-    if (prev) {
-      process.env.VIRUAGENT_SESSION_PATH = prev;
-    } else {
-      delete process.env.VIRUAGENT_SESSION_PATH;
-    }
-  }
+const withProviderSession = async (fn) => {
+  return fn();
 };
 
-const persistTistorySession = async (context, targetSessionPath = tistorySessionPath) => {
+const persistTistorySession = async (context, targetSessionPath) => {
   const cookies = await context.cookies('https://www.tistory.com');
   const sanitized = cookies.map((cookie) => ({
     ...cookie,
@@ -1244,6 +1390,17 @@ const persistTistorySession = async (context, targetSessionPath = tistorySession
 };
 
 const createTistoryProvider = ({ sessionPath }) => {
+  const tistoryApi = createTistoryApiClient({ sessionPath });
+
+  const pending2faResult = (mode = 'kakao') => ({
+    provider: 'tistory',
+    status: 'pending_2fa',
+    loggedIn: false,
+    message: mode === 'otp'
+      ? '2차 인증이 필요합니다. otp 코드를 twoFactorCode로 전달해 주세요.'
+      : '카카오 2차 인증이 필요합니다. 앱에서 인증 후 다시 실행하면 됩니다.',
+  });
+
   const askForAuthentication = async ({ headless = false, username, password, twoFactorCode } = {}) => {
     fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
 
@@ -1260,160 +1417,120 @@ const createTistoryProvider = ({ sessionPath }) => {
         waitUntil: 'domcontentloaded',
       });
 
-      const envCreds = readCredentialsFromEnv();
-      const loginId = username || envCreds.username;
-      const loginPw = password || envCreds.password;
+      const loginId = username || readCredentialsFromEnv().username;
+      const loginPw = password || readCredentialsFromEnv().password;
 
-      if (loginId && loginPw) {
-        let usernameFilled = await fillBySelector(page, LOGIN_SELECTORS.username, loginId);
-        let passwordFilled = await fillBySelector(page, LOGIN_SELECTORS.password, loginPw);
+      const kakaoLoginSelector = await pickValue(page, KAKAO_TRIGGER_SELECTORS);
+      if (!kakaoLoginSelector) {
+        throw new Error('카카오 로그인 버튼을 찾지 못했습니다. 로그인 화면 UI가 변경되었는지 확인해 주세요.');
+      }
 
-        if (!usernameFilled || !passwordFilled) {
-          const kakaoClicked = await clickSubmit(page, KAKAO_TRIGGER_SELECTORS);
-          if (!kakaoClicked) {
-            const kakaoLink = await pickValue(page, KAKAO_TRIGGER_SELECTORS);
-            if (!kakaoLink) {
-              throw new Error('로그인 폼 입력 필드를 찾지 못했습니다. 수동 로그인 모드로 시도해 주세요.');
-            }
-          }
+      await page.locator(kakaoLoginSelector).click({ timeout: 5000 }).catch(() => {});
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForTimeout(800);
 
-          await page.locator('a.link_kakao_id, a:has-text("카카오계정으로 로그인")').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-          await page.click('a.link_kakao_id, a:has-text("카카오계정으로 로그인")', { timeout: 5000 }).catch(async () => {
-            const kakaoAlternative = await pickValue(page, KAKAO_TRIGGER_SELECTORS);
-            if (kakaoAlternative) {
-              await page.locator(kakaoAlternative).click({ timeout: 5000 });
-            }
-          });
-          await page.waitForLoadState('domcontentloaded');
-          await page.waitForTimeout(800);
+      const usernameFilled = await fillBySelector(page, KAKAO_LOGIN_SELECTORS.username, loginId);
+      const passwordFilled = await fillBySelector(page, KAKAO_LOGIN_SELECTORS.password, loginPw);
+      if (!usernameFilled || !passwordFilled) {
+        throw new Error('카카오 로그인 폼 입력 필드를 찾지 못했습니다. 티스토리 로그인 화면 변경 시도를 확인해 주세요.');
+      }
 
-          usernameFilled = await fillBySelector(page, KAKAO_LOGIN_SELECTORS.username, loginId);
-          passwordFilled = await fillBySelector(page, KAKAO_LOGIN_SELECTORS.password, loginPw);
-          if (!usernameFilled || !passwordFilled) {
-            throw new Error('카카오 로그인 폼 입력 필드를 찾지 못했습니다. 수동 로그인 모드로 시도해 주세요.');
-          }
+      await checkBySelector(page, KAKAO_LOGIN_SELECTORS.rememberLogin);
+      const kakaoSubmitted = await clickSubmit(page, KAKAO_LOGIN_SELECTORS.submit);
+      if (!kakaoSubmitted) {
+        await page.keyboard.press('Enter');
+      }
 
-          await checkBySelector(page, KAKAO_LOGIN_SELECTORS.rememberLogin);
-          const kakaoSubmitted = await clickSubmit(page, KAKAO_LOGIN_SELECTORS.submit);
-          if (!kakaoSubmitted) {
-            await page.keyboard.press('Enter');
-          }
-        } else {
-          const legacySubmitted = await clickSubmit(page, LOGIN_SELECTORS.submit);
-          if (!legacySubmitted) {
-            await page.keyboard.press('Enter');
-          }
+      let finalLoginStatus = await waitForLoginFinish(page, context);
+      let pendingTwoFactorAction = false;
+
+      if (!finalLoginStatus && await hasElement(page, LOGIN_OTP_SELECTORS)) {
+        if (!twoFactorCode) {
+          return pending2faResult('otp');
         }
+        const otpFilled = await fillBySelector(page, LOGIN_OTP_SELECTORS, twoFactorCode);
+        if (!otpFilled) {
+          throw new Error('OTP 입력 필드를 찾지 못했습니다. 로그인 페이지를 확인해 주세요.');
+        }
+        await page.keyboard.press('Enter');
+        finalLoginStatus = await waitForLoginFinish(page, context, 45000);
+      } else if (!finalLoginStatus && (await hasElement(page, KAKAO_2FA_SELECTORS.start) || page.url().includes('tmsTwoStepVerification') || page.url().includes('emailTwoStepVerification'))) {
+        await checkBySelector(page, KAKAO_2FA_SELECTORS.rememberDevice);
+        const isEmailModeAvailable = await hasElement(page, KAKAO_2FA_SELECTORS.emailModeButton);
+        const hasEmailCodeInput = await hasElement(page, KAKAO_2FA_SELECTORS.codeInput);
 
-        const loggedIn = await waitForLoginFinish(page, context);
-        let finalLoginStatus = loggedIn;
-        let pendingTwoFactorAction = false;
-        if (!loggedIn && await hasElement(page, LOGIN_SELECTORS.otp)) {
-          if (!twoFactorCode) {
-            throw new Error('2차 인증이 감지되었습니다. OTP 코드를 twoFactorCode로 전달해 주세요.');
+        if (hasEmailCodeInput && twoFactorCode) {
+          const codeFilled = await fillBySelector(page, KAKAO_2FA_SELECTORS.codeInput, twoFactorCode);
+          if (!codeFilled) {
+            throw new Error('2차 인증 입력 필드를 찾지 못했습니다. 로그인 페이지를 확인해 주세요.');
           }
-          const otpFilled = await fillBySelector(page, LOGIN_SELECTORS.otp, twoFactorCode);
-          if (!otpFilled) {
-            throw new Error('2차 인증 입력 필드를 찾지 못했습니다. 수동으로 진행해 주세요.');
+          const confirmed = await clickSubmit(page, KAKAO_2FA_SELECTORS.confirm);
+          if (!confirmed) {
+            await page.keyboard.press('Enter');
           }
-          await page.keyboard.press('Enter');
+          finalLoginStatus = await waitForLoginFinish(page, context, 45000);
+        } else if (!twoFactorCode && isEmailModeAvailable && process.stdin.isTTY) {
+          console.log('');
+          console.log('==============================');
+          console.log('카카오 2차 인증이 감지되었습니다.');
+          console.log('카카오톡 앱에서 알림을 눌러 로그인을 승인해 주세요.');
+          console.log('승인 완료 후 Enter를 눌러주세요.');
+          console.log('==============================');
+          await waitForUser();
           finalLoginStatus = await waitForLoginFinish(page, context, 45000);
           if (!finalLoginStatus) {
-            throw new Error('2차 인증 입력 후 로그인 완료되지 않았습니다.');
+            pendingTwoFactorAction = true;
           }
-        } else if (!loggedIn && (await hasElement(page, KAKAO_2FA_SELECTORS.start) || page.url().includes('tmsTwoStepVerification') || page.url().includes('emailTwoStepVerification'))) {
-          const isEmailModeAvailable = await hasElement(page, KAKAO_2FA_SELECTORS.emailModeButton);
-          await checkBySelector(page, KAKAO_2FA_SELECTORS.rememberDevice);
-          if (await hasElement(page, KAKAO_2FA_SELECTORS.codeInput)) {
-            if (!twoFactorCode) {
-              throw new Error('2차 인증이 감지되었습니다. 이메일 인증 코드를 twoFactorCode로 전달해 주세요.');
-            }
-
-            const codeFilled = await fillBySelector(page, KAKAO_2FA_SELECTORS.codeInput, twoFactorCode);
-            if (!codeFilled) {
-              throw new Error('2차 인증 입력 필드를 찾지 못했습니다. 수동으로 진행해 주세요.');
-            }
-
-            const confirmed = await clickSubmit(page, KAKAO_2FA_SELECTORS.confirm);
-            if (!confirmed) {
-              await page.keyboard.press('Enter');
-            }
-            finalLoginStatus = await waitForLoginFinish(page, context, 45000);
-            if (!finalLoginStatus) {
-              throw new Error('2차 인증 입력 후 로그인 완료되지 않았습니다.');
-            }
-          } else if (!twoFactorCode && isEmailModeAvailable && process.stdin.isTTY) {
-            console.log('');
-            console.log('==============================');
-            console.log('카카오 2차 인증이 감지되었습니다.');
-            console.log('카카오톡 앱에서 알림을 눌러 로그인을 승인해 주세요.');
-            console.log('승인 완료 후 Enter를 눌러주세요.');
-            console.log('==============================');
-            await waitForUser();
-            finalLoginStatus = await waitForLoginFinish(page, context, 45000);
-            if (!finalLoginStatus) {
-              pendingTwoFactorAction = true;
-            }
-          } else if (!twoFactorCode) {
-            console.log('');
-            console.log('==============================');
-            console.log('카카오 2차 인증이 감지되었습니다.');
-            console.log('카카오톡 앱에서 푸시 승인 후 로그인 완료 대기 중입니다.');
-            console.log('최대 120초 동안 상태를 확인합니다.');
-            console.log('==============================');
-            finalLoginStatus = await waitForLoginFinish(page, context, 120000);
-            if (!finalLoginStatus) {
-              pendingTwoFactorAction = true;
-            }
-          } else if (isEmailModeAvailable) {
-            await clickSubmit(page, KAKAO_2FA_SELECTORS.emailModeButton);
-            await page.waitForLoadState('domcontentloaded');
-            await page.waitForTimeout(800);
-
-            const codeFilled = await fillBySelector(page, KAKAO_2FA_SELECTORS.codeInput, twoFactorCode);
-            if (!codeFilled) {
-              throw new Error('2차 인증 입력 필드를 찾지 못했습니다. 수동으로 진행해 주세요.');
-            }
-
-            const confirmed = await clickSubmit(page, KAKAO_2FA_SELECTORS.confirm);
-            if (!confirmed) {
-              await page.keyboard.press('Enter');
-            }
-            finalLoginStatus = await waitForLoginFinish(page, context, 45000);
-            if (!finalLoginStatus) {
-              throw new Error('2차 인증 입력 후 로그인 완료되지 않았습니다.');
-            }
-          }
-        }
-
+        } else if (!twoFactorCode) {
+          console.log('');
+          console.log('==============================');
+          console.log('카카오 2차 인증이 감지되었습니다.');
+          console.log('카카오톡 앱에서 푸시 승인 후 로그인 완료 대기 중입니다.');
+          console.log('최대 120초 동안 상태를 확인합니다.');
+          console.log('==============================');
+          finalLoginStatus = await waitForLoginFinish(page, context, 120000);
           if (!finalLoginStatus) {
-            if (pendingTwoFactorAction) {
-              return {
-                provider: 'tistory',
-                status: 'pending_2fa',
-                loggedIn: false,
-                message: '카카오 2차 인증이 필요합니다. 앱에서 인증 후 다시 실행하면 됩니다.',
-              };
-            }
-            throw new Error('자동 로그인에 실패했습니다. 아이디/비밀번호가 정확한지 확인하고, 없으면 환경변수 TISTORY_USERNAME/TISTORY_PASSWORD를 다시 설정해 주세요.');
+            pendingTwoFactorAction = true;
           }
-      } else {
-        throw new Error('로그인 정보가 없습니다. username/password를 전달하거나 환경변수 TISTORY_USERNAME/TISTORY_PASSWORD를 설정해 주세요.');
+        } else if (isEmailModeAvailable) {
+          await clickSubmit(page, KAKAO_2FA_SELECTORS.emailModeButton).catch(() => {});
+          await page.waitForLoadState('domcontentloaded').catch(() => {});
+          await page.waitForTimeout(800);
+
+          const codeFilled = await fillBySelector(page, KAKAO_2FA_SELECTORS.codeInput, twoFactorCode);
+          if (!codeFilled) {
+            throw new Error('카카오 이메일 인증 입력 필드를 찾지 못했습니다. 로그인 페이지를 확인해 주세요.');
+          }
+
+          const confirmed = await clickSubmit(page, KAKAO_2FA_SELECTORS.confirm);
+          if (!confirmed) {
+            await page.keyboard.press('Enter');
+          }
+          finalLoginStatus = await waitForLoginFinish(page, context, 45000);
+        } else {
+          return pending2faResult('kakao');
+        }
+      }
+
+      if (!finalLoginStatus) {
+        if (pendingTwoFactorAction) {
+          return pending2faResult('kakao');
+        }
+        throw new Error('자동 로그인에 실패했습니다. 아이디/비밀번호가 정확한지 확인하고, 없으면 환경변수 TISTORY_USERNAME/TISTORY_PASSWORD를 다시 설정해 주세요.');
       }
 
       await context.storageState({ path: sessionPath });
-      await persistTistorySession(context);
+      await persistTistorySession(context, sessionPath);
 
-      return withProviderSession(sessionPath, async () => {
-        const blogName = await tistory.initBlog();
-        return {
-          provider: 'tistory',
-          loggedIn: true,
-          blogName,
-          blogUrl: `https://${blogName}.tistory.com`,
-          sessionPath,
-        };
-      });
+      tistoryApi.resetState();
+      const blogName = await tistoryApi.initBlog();
+      return {
+        provider: 'tistory',
+        loggedIn: true,
+        blogName,
+        blogUrl: `https://${blogName}.tistory.com`,
+        sessionPath,
+      };
     } finally {
       await browser.close().catch(() => {});
     }
@@ -1424,9 +1541,9 @@ const createTistoryProvider = ({ sessionPath }) => {
     name: 'Tistory',
 
     async authStatus() {
-      return withProviderSession(sessionPath, async () => {
+      return withProviderSession(async () => {
         try {
-          const blogName = await tistory.initBlog();
+          const blogName = await tistoryApi.initBlog();
           return {
             provider: 'tistory',
             loggedIn: true,
@@ -1476,24 +1593,36 @@ const createTistoryProvider = ({ sessionPath }) => {
     },
 
     async publish(payload) {
-      return withProviderSession(sessionPath, async () => {
+      return withProviderSession(async () => {
         const title = payload.title || '제목 없음';
         const rawContent = payload.content || '';
         const visibility = mapVisibility(payload.visibility);
-        const tag = payload.tags || '';
+        const tag = normalizeTagList(payload.tags);
         const rawThumbnail = payload.thumbnail || null;
         const relatedImageKeywords = payload.relatedImageKeywords || [];
         const imageUrls = payload.imageUrls || [];
         const autoUploadImages = payload.autoUploadImages !== false;
         const imageUploadLimit = Number(payload.imageUploadLimit);
-        const safeImageUploadLimit = Number.isFinite(imageUploadLimit) && imageUploadLimit > 0 ? imageUploadLimit : 3;
+        const minimumImageCount = Number(payload.minimumImageCount);
+        const safeImageUploadLimit = Number.isFinite(imageUploadLimit) && imageUploadLimit > 0
+          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, imageUploadLimit)
+          : MAX_IMAGE_UPLOAD_COUNT;
+        const safeMinimumImageCount = Number.isFinite(minimumImageCount) && minimumImageCount >= 0
+          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, minimumImageCount)
+          : 3;
+
+        if (autoUploadImages) {
+          await tistoryApi.initBlog();
+        }
 
         const enrichedImages = await enrichContentWithUploadedImages({
+          api: tistoryApi,
           rawContent,
           autoUploadImages,
           relatedImageKeywords,
           imageUrls,
           imageUploadLimit: safeImageUploadLimit,
+          minimumImageCount: safeMinimumImageCount,
         });
         if (enrichedImages.status === 'need_image_urls') {
           return {
@@ -1511,6 +1640,27 @@ const createTistoryProvider = ({ sessionPath }) => {
           };
         }
 
+        if (enrichedImages.status === 'insufficient_images') {
+          return {
+            mode: 'publish',
+            status: 'insufficient_images',
+            loggedIn: true,
+            provider: 'tistory',
+            title,
+            visibility,
+            tags: tag,
+            message: enrichedImages.message,
+            imageCount: enrichedImages.uploadedCount,
+            requestedCount: enrichedImages.requestedCount,
+            uploadedCount: enrichedImages.uploadedCount,
+            uploadErrors: enrichedImages.uploadErrors || [],
+            providedImageUrls: enrichedImages.providedImageUrls,
+            missingImageCount: enrichedImages.missingImageCount || 0,
+            imageLimit: enrichedImages.imageLimit || safeImageUploadLimit,
+            minimumImageCount: safeMinimumImageCount,
+          };
+        }
+
         if (enrichedImages.status === 'image_upload_failed' || enrichedImages.status === 'image_upload_partial') {
           return {
             mode: 'publish',
@@ -1520,6 +1670,7 @@ const createTistoryProvider = ({ sessionPath }) => {
             title,
             visibility,
             tags: tag,
+            thumbnail: normalizeThumbnailForPublish(payload.thumbnail) || null,
             message: enrichedImages.message,
             imageCount: enrichedImages.uploadedCount,
             requestedCount: enrichedImages.requestedCount,
@@ -1535,10 +1686,14 @@ const createTistoryProvider = ({ sessionPath }) => {
           .map((image) => normalizeUploadedImageThumbnail(image))
           .find(Boolean)
           || extractThumbnailFromContent(content)
+          || uploadedImages
+            .map((image) => normalizeImageUrlForThumbnail(image?.uploadedUrl))
+            .find(Boolean)
           || null;
+        const finalThumbnail = normalizeThumbnailForPublish(resolvedThumbnail || fallbackThumbnail || null);
 
-        await tistory.initBlog();
-        const rawCategories = await tistory.getCategories();
+        await tistoryApi.initBlog();
+        const rawCategories = await tistoryApi.getCategories();
         const categories = buildCategoryList(rawCategories);
 
         if (!isProvidedCategory(payload.category)) {
@@ -1604,13 +1759,13 @@ const createTistoryProvider = ({ sessionPath }) => {
         }
 
         try {
-          const result = await tistory.publishPost({
+          const result = await tistoryApi.publishPost({
             title,
             content,
             visibility,
             category,
             tag,
-            thumbnail: resolvedThumbnail || fallbackThumbnail || null,
+            thumbnail: finalThumbnail,
           });
 
           return {
@@ -1620,8 +1775,10 @@ const createTistoryProvider = ({ sessionPath }) => {
             category,
             visibility,
             tags: tag,
+            thumbnail: finalThumbnail,
             images: enrichedImages.images,
             imageCount: enrichedImages.uploadedCount,
+            minimumImageCount: safeMinimumImageCount,
             url: result.entryUrl || null,
             raw: result,
           };
@@ -1630,45 +1787,91 @@ const createTistoryProvider = ({ sessionPath }) => {
             throw error;
           }
 
-          const draftResult = await tistory.saveDraft({ title, content });
-          return {
-            provider: 'tistory',
-            mode: 'draft',
-            status: 'publish_fallback_to_draft',
-            title,
-            category,
-            visibility,
-            tags: tag,
-            images: enrichedImages.images,
-            imageCount: enrichedImages.uploadedCount,
-            draftContent: content,
-            draftSequence: draftResult.draft?.sequence || null,
-            message: '발행 제한(403)으로 인해 임시저장으로 전환했습니다.',
-            fallbackThumbnail: resolvedThumbnail
-              || uploadedImages?.map((image) => normalizeUploadedImageThumbnail(image)).find(Boolean)
-              || extractThumbnailFromContent(content)
-              || null,
-            raw: draftResult,
-          };
+          try {
+            const fallbackPublishResult = await tistoryApi.publishPost({
+              title,
+              content,
+              visibility: 0,
+              category,
+              tag,
+              thumbnail: finalThumbnail,
+            });
+
+            return {
+              provider: 'tistory',
+              mode: 'publish',
+              status: 'publish_fallback_to_private',
+              title,
+              category,
+              visibility: 0,
+              tags: tag,
+              thumbnail: finalThumbnail,
+              images: enrichedImages.images,
+              imageCount: enrichedImages.uploadedCount,
+              minimumImageCount: safeMinimumImageCount,
+              url: fallbackPublishResult.entryUrl || null,
+              raw: fallbackPublishResult,
+              message: '발행 제한(403)으로 인해 비공개로 발행했습니다.',
+              fallbackThumbnail: finalThumbnail,
+            };
+          } catch (fallbackError) {
+            if (!isPublishLimitError(fallbackError)) {
+              throw fallbackError;
+            }
+
+            return {
+              provider: 'tistory',
+              mode: 'publish',
+              status: 'publish_fallback_to_private_failed',
+              title,
+              category,
+              visibility: 0,
+              tags: tag,
+              thumbnail: finalThumbnail,
+              images: enrichedImages.images,
+              imageCount: enrichedImages.uploadedCount,
+              minimumImageCount: safeMinimumImageCount,
+              message: '발행 제한(403)으로 인해 공개/비공개 모두 실패했습니다.',
+              raw: {
+                success: false,
+                error: fallbackError.message,
+              },
+            };
+          }
         }
       });
     },
 
     async saveDraft(payload) {
-      return withProviderSession(sessionPath, async () => {
+      return withProviderSession(async () => {
         const title = payload.title || '임시저장';
         const rawContent = payload.content || '';
         const rawThumbnail = payload.thumbnail || null;
+        const tag = normalizeTagList(payload.tags);
         const relatedImageKeywords = payload.relatedImageKeywords || [];
         const imageUrls = payload.imageUrls || [];
         const autoUploadImages = payload.autoUploadImages !== false;
         const imageUploadLimit = Number(payload.imageUploadLimit);
+        const minimumImageCount = Number(payload.minimumImageCount);
+        const safeImageUploadLimit = Number.isFinite(imageUploadLimit) && imageUploadLimit > 0
+          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, imageUploadLimit)
+          : MAX_IMAGE_UPLOAD_COUNT;
+        const safeMinimumImageCount = Number.isFinite(minimumImageCount) && minimumImageCount >= 0
+          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, minimumImageCount)
+          : 3;
+
+        if (autoUploadImages) {
+          await tistoryApi.initBlog();
+        }
+
         const enrichedImages = await enrichContentWithUploadedImages({
+          api: tistoryApi,
           rawContent,
           autoUploadImages,
           relatedImageKeywords,
           imageUrls,
-          imageUploadLimit,
+          imageUploadLimit: safeImageUploadLimit,
+          minimumImageCount: safeMinimumImageCount,
         });
 
         if (enrichedImages.status === 'need_image_urls') {
@@ -1683,8 +1886,29 @@ const createTistoryProvider = ({ sessionPath }) => {
             requestedCount: enrichedImages.requestedCount,
             providedImageUrls: enrichedImages.providedImageUrls,
             imageCount: enrichedImages.imageCount,
+            minimumImageCount: safeMinimumImageCount,
             images: enrichedImages.images,
             uploadedCount: enrichedImages.uploadedCount,
+          };
+        }
+
+        if (enrichedImages.status === 'insufficient_images') {
+          return {
+            mode: 'draft',
+            status: 'insufficient_images',
+            loggedIn: true,
+            provider: 'tistory',
+            title,
+            message: enrichedImages.message,
+            imageCount: enrichedImages.imageCount,
+            requestedCount: enrichedImages.requestedCount,
+            uploadedCount: enrichedImages.uploadedCount,
+            uploadErrors: enrichedImages.uploadErrors,
+            providedImageUrls: enrichedImages.providedImageUrls,
+            minimumImageCount: safeMinimumImageCount,
+            imageLimit: enrichedImages.imageLimit || safeImageUploadLimit,
+            missingImageCount: enrichedImages.missingImageCount || 0,
+            images: enrichedImages.images,
           };
         }
 
@@ -1710,20 +1934,24 @@ const createTistoryProvider = ({ sessionPath }) => {
           ?.map((image) => normalizeUploadedImageThumbnail(image))
           .find(Boolean)
           || extractThumbnailFromContent(content)
+          || enrichedImages?.images
+            ?.map((image) => normalizeImageUrlForThumbnail(image?.uploadedUrl))
+            .find(Boolean)
           || null;
-        const thumbnail = normalizeThumbnailForPublish(rawThumbnail) || fallbackThumbnail || null;
+        const thumbnail = normalizeThumbnailForPublish(rawThumbnail || fallbackThumbnail || null);
 
-        await tistory.initBlog();
-        const result = await tistory.saveDraft({ title, content });
+        await tistoryApi.initBlog();
+        const result = await tistoryApi.saveDraft({ title, content });
         return {
           provider: 'tistory',
           mode: 'draft',
           title,
           status: 'ok',
           category: Number(payload.category) || 0,
-          tags: payload.tags || '',
+          tags: tag,
           sequence: result.draft?.sequence || null,
           thumbnail,
+          minimumImageCount: safeMinimumImageCount,
           imageCount: enrichedImages.imageCount,
           images: enrichedImages.images,
           uploadErrors: enrichedImages.uploadErrors || null,
@@ -1734,9 +1962,9 @@ const createTistoryProvider = ({ sessionPath }) => {
     },
 
     async listCategories() {
-      return withProviderSession(sessionPath, async () => {
-        await tistory.initBlog();
-        const categories = await tistory.getCategories();
+      return withProviderSession(async () => {
+        await tistoryApi.initBlog();
+        const categories = await tistoryApi.getCategories();
         return {
           provider: 'tistory',
           categories: Object.entries(categories).map(([name, id]) => ({
@@ -1748,9 +1976,9 @@ const createTistoryProvider = ({ sessionPath }) => {
     },
 
     async listPosts({ limit = 20 } = {}) {
-      return withProviderSession(sessionPath, async () => {
-        await tistory.initBlog();
-        const result = await tistory.getPosts();
+      return withProviderSession(async () => {
+        await tistoryApi.initBlog();
+        const result = await tistoryApi.getPosts();
         const items = Array.isArray(result?.items) ? result.items : [];
         return {
           provider: 'tistory',
@@ -1761,7 +1989,7 @@ const createTistoryProvider = ({ sessionPath }) => {
     },
 
     async getPost({ postId, includeDraft = false } = {}) {
-      return withProviderSession(sessionPath, async () => {
+      return withProviderSession(async () => {
         const resolvedPostId = String(postId || '').trim();
         if (!resolvedPostId) {
           return {
@@ -1772,11 +2000,21 @@ const createTistoryProvider = ({ sessionPath }) => {
           };
         }
 
-        await tistory.initBlog();
-        const post = await tistory.getPost({
+        await tistoryApi.initBlog();
+        const post = await tistoryApi.getPost({
           postId: resolvedPostId,
           includeDraft: Boolean(includeDraft),
         });
+        if (!post) {
+          return {
+            provider: 'tistory',
+            mode: 'post',
+            status: 'not_found',
+            postId: resolvedPostId,
+            includeDraft: Boolean(includeDraft),
+            message: '해당 postId의 글을 찾지 못했습니다.',
+          };
+        }
         return {
           provider: 'tistory',
           mode: 'post',

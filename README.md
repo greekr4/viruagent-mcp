@@ -2,9 +2,16 @@
 
 `viruagent`의 포스팅 기능을 MCP 서버로 노출한 패키지입니다.
 
-- 클로드/코덱스/Claude Code 등에서 MCP tool 호출로 글쓰기 동작 제어 가능
-- 티스토리 로그인 + 발행(또는 임시저장) + 카테고리 조회
-- 추후 Naver Provider 확장 위치 제공
+CLI 기반 AI Agent가 티스토리 글을 작성·업로드·발행(공개/비공개)까지 한 번에 처리하는 MCP입니다.  
+OpenAI Function Calling으로 의도를 정하고, MCP/Playwright/Tistory API가 실행을 분리 수행합니다.
+- AI Agent: 요청 파라미터 결정
+- MCP Tool: `publish`/`save_draft`/`list_categories` 호출 인터페이스
+- Playwright: 로그인·2차인증·세션, Tistory API: 발행/임시저장/카테고리/이미지 처리
+
+## 최근 반영사항
+
+- 2026-02-27: `publish`에서 403 발생 시 우선 `비공개` 발행(`visibility: 0`)으로 fallback 합니다.
+- 동일 일시에서 403이 반복되면 비공개 발행도 실패하고, 해당 에러를 반환해 다시 시도/리커버리 제어할 수 있도록 구성했습니다.
 
 ## 설치
 
@@ -59,7 +66,7 @@ node bin/index.js
 - 카카오톡 푸시 2차 인증이 감지되면, 사용자 승인 대기(`status: "pending_2fa"`) 상태를 반환하고 승인 완료 후 재시도할 수 있습니다.
 - `remember browser`(이 브라우저에서 2차 인증 사용 안 함)에 해당하는 체크박스가 보이면 자동 체크를 시도합니다.
 - `viruagent_publish`는 category가 없으면 카테고리 목록을 돌려주고 사용자가 `category`를 지정해 다시 요청하게 합니다. (카테고리가 하나뿐이면 자동 선택)
-- `viruagent_publish`는 발행 요청 시 403(일일 발행 제한) 오류가 발생하면 자동으로 임시저장으로 전환합니다.
+- `viruagent_publish`는 발행 요청 시 403(발행 제한) 오류가 발생하면 `visibility: 0`(비공개) 발행으로 먼저 fallback를 시도합니다.
 - `viruagent_publish`는 본문 placeholder(`<!-- IMAGE: keyword -->`)를 발견하면 `imageUrls`를 받아
   원격 URL이면 로컬로 다운로드하고, 로컬 파일 경로면 바로 업로드합니다.
   업로드는 Tistory 이미지 업로드 API를 통해 진행됩니다.
@@ -117,13 +124,25 @@ export TISTORY_PASSWORD="your-password"
 
 실패 응답에는 `uploadErrors`에 실패 URL/에러 메시지가 들어오므로, 동일 `title/content`로 `imageUrls`만 보완해서 재요청하세요.
 
-발행이 403으로 막혀 임시저장으로 넘어간 경우:
+발행이 403으로 막혀 비공개로 fallback된 경우:
 ```json
 {
   "provider": "tistory",
-  "mode": "draft",
-  "status": "publish_fallback_to_draft",
-  "message": "발행 제한(403)으로 인해 임시저장으로 전환했습니다."
+  "mode": "publish",
+  "status": "publish_fallback_to_private",
+  "visibility": 0,
+  "message": "발행 제한(403)으로 인해 비공개로 발행했습니다."
+}
+```
+
+발행 403이 비공개 fallback에서도 반복되어 실패한 경우:
+```json
+{
+  "provider": "tistory",
+  "mode": "publish",
+  "status": "publish_fallback_to_private_failed",
+  "visibility": 0,
+  "message": "발행 제한(403)으로 인해 공개/비공개 모두 실패했습니다."
 }
 ```
 

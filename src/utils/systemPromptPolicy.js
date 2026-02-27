@@ -16,6 +16,40 @@ const countMatches = (content, regex) => {
   return matches ? matches.length : 0;
 };
 
+const toLowerCaseTrim = (value = '') => String(value || '').toLowerCase().trim();
+
+const normalizeDataKeStyleValue = (rawValue = '') => {
+  const unescaped = String(rawValue)
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'");
+  return toLowerCaseTrim(unescaped).replace(/^["']|["']$/gu, '');
+};
+
+const hasTagWithDataKeStyle = (html = '', tagName = '', styleName = '') => {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+  const target = toLowerCaseTrim(styleName);
+  const matches = String(html || '').matchAll(pattern);
+
+  for (const match of matches) {
+    const tag = match?.[0];
+    if (!tag) continue;
+
+    const styleMatch = tag.match(/data-ke-style\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/i);
+    if (!styleMatch) {
+      continue;
+    }
+
+    const normalized = normalizeDataKeStyleValue(styleMatch[2] || styleMatch[3]);
+    if (normalized === target) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const toArray = (tags = '') =>
   String(tags || '')
     .split(',')
@@ -78,8 +112,8 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
   const imagePlaceholderCount = countMatches(textContent, /<!--\s*IMAGE:\s*[^>]+-->/gi);
   const listExists = /<ul\b/i.test(textContent) || /<ol\b/i.test(textContent);
   const tableExists = /<table\b/i.test(textContent);
-  const quoteExists = /<blockquote\s+data-ke-style="style1"[\s>]/i.test(textContent);
-  const hrExists = /<hr\b[^>]*data-ke-style="style6"/i.test(textContent);
+  const quoteExists = hasTagWithDataKeStyle(textContent, 'blockquote', 'style1');
+  const hrExists = hasTagWithDataKeStyle(textContent, 'hr', 'style6');
   const listParagraphExists = /<p\b[^>]*data-ke-size="size16"/i.test(textContent);
   const htmlLike = /<[a-zA-Z][^>]*>/g.test(textContent);
 
