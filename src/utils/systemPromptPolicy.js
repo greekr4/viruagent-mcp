@@ -124,11 +124,11 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
   }
 
   const tagCount = toArray(tags).length;
-  if (tagCount > 0 && tagCount < 4) {
-    warnings.push('태그가 4개 미만입니다. 검색 유입용으로 4~6개 권장.');
+  if (tagCount > 0 && tagCount < 10) {
+    warnings.push('태그가 10개 미만입니다. 검색 유입용으로 10개를 권장합니다.');
   }
-  if (tagCount > 8) {
-    warnings.push('태그가 8개를 초과했습니다. 너무 많은 태그는 노이즈가 됩니다.');
+  if (tagCount > 10) {
+    warnings.push('태그가 10개를 초과했습니다. 너무 많은 태그는 노이즈가 됩니다.');
   }
 
   return {
@@ -142,6 +142,7 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
       requireHr: true,
       requireList: true,
       requireTable: true,
+      requiredTagCount: 10,
       titleMinLength: 12,
     },
     policyFile: PROMPT_PATH,

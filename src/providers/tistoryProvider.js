@@ -1247,6 +1247,10 @@ const createTistoryProvider = ({ sessionPath }) => {
   const askForAuthentication = async ({ headless = false, username, password, twoFactorCode } = {}) => {
     fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
 
+    if (!username || !password) {
+      throw new Error('티스토리 로그인 요청에 id/pw가 없습니다. id/pw를 먼저 전달하거나 TISTORY_USERNAME/TISTORY_PASSWORD를 설정해 주세요.');
+    }
+
     const browser = await chromium.launch({ headless });
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -1382,30 +1386,19 @@ const createTistoryProvider = ({ sessionPath }) => {
           }
         }
 
-        if (!finalLoginStatus) {
-          if (pendingTwoFactorAction) {
-            return {
-              provider: 'tistory',
-              status: 'pending_2fa',
-              loggedIn: false,
-              message: '카카오 2차 인증이 필요합니다. 앱에서 인증 후 다시 실행하면 됩니다.',
-            };
+          if (!finalLoginStatus) {
+            if (pendingTwoFactorAction) {
+              return {
+                provider: 'tistory',
+                status: 'pending_2fa',
+                loggedIn: false,
+                message: '카카오 2차 인증이 필요합니다. 앱에서 인증 후 다시 실행하면 됩니다.',
+              };
+            }
+            throw new Error('자동 로그인에 실패했습니다. 아이디/비밀번호가 정확한지 확인하고, 없으면 환경변수 TISTORY_USERNAME/TISTORY_PASSWORD를 다시 설정해 주세요.');
           }
-          throw new Error('자동 로그인에 실패했습니다. 아이디/비밀번호가 정확한지 확인하거나 manual=true로 수동 로그인하세요.');
-        }
-      } else if (!headless && process.stdin.isTTY) {
-        console.log('');
-        console.log('==============================');
-        console.log('티스토리 브라우저 로그인 페이지가 열립니다.');
-        console.log('로그인 + 2차인증까지 마친 뒤 Enter를 눌러주세요.');
-        console.log('==============================');
-        await waitForUser();
       } else {
-        // 최소 로그인 완료 신호 대기
-        const ok = await waitForLoginFinish(page, context, 120000);
-        if (!ok) {
-          throw new Error('로그인 감지를 실패했습니다. headless 모드에서는 수동 입력을 지원하지 않습니다.');
-        }
+        throw new Error('로그인 정보가 없습니다. username/password를 전달하거나 환경변수 TISTORY_USERNAME/TISTORY_PASSWORD를 설정해 주세요.');
       }
 
       await context.storageState({ path: sessionPath });
@@ -1459,9 +1452,7 @@ const createTistoryProvider = ({ sessionPath }) => {
       username,
       password,
       twoFactorCode,
-      manual = false,
     } = {}) {
-      const shouldUseManual = Boolean(manual);
       const creds = readCredentialsFromEnv();
       const resolved = {
         headless,
@@ -1470,9 +1461,8 @@ const createTistoryProvider = ({ sessionPath }) => {
         twoFactorCode,
       };
 
-      if (shouldUseManual) {
-        resolved.username = null;
-        resolved.password = null;
+      if (!resolved.username || !resolved.password) {
+        throw new Error('티스토리 자동 로그인을 진행하려면 username/password가 필요합니다. 요청 값으로 전달하거나, 환경변수 TISTORY_USERNAME / TISTORY_PASSWORD를 설정해 주세요.');
       }
 
       const result = await askForAuthentication(resolved);

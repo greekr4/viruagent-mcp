@@ -11,6 +11,7 @@ const {
   sanitizeTitleDecorations,
   validateMcpSystemPrompt,
 } = require('./utils/systemPromptPolicy');
+const { generateAutoTags } = require('./utils/tagGenerator');
 
 const createServer = () => {
   const providerManager = createProviderManager();
@@ -281,10 +282,15 @@ const createServer = () => {
         viruagent_publish: () => {
           const sanitizedTitle = sanitizeTitleDecorations(args.title || '');
           const hasSanitizedTitle = String(sanitizedTitle || '').trim() !== String(args.title || '').trim();
+          const tags = generateAutoTags({
+            title: sanitizedTitle,
+            content: args.content || '',
+            providedTags: args.tags || '',
+          });
           const policy = validateMcpSystemPrompt({
             title: sanitizedTitle,
             content: args.content || '',
-            tags: args.tags || '',
+            tags,
           });
           if (args.enforceSystemPrompt !== false && !policy.valid) {
             return {
@@ -295,7 +301,7 @@ const createServer = () => {
               sanitizedTitle,
               hasSanitizedTitle,
               visibility: args.visibility || 'public',
-              tags: args.tags || '',
+              tags,
               category: Number(args.category) || 0,
               violations: policy.violations,
               warnings: policy.warnings,
@@ -311,7 +317,7 @@ const createServer = () => {
             content: args.content,
             visibility: args.visibility || 'public',
             category: Number(args.category) || 0,
-            tags: args.tags || '',
+            tags,
             thumbnail: args.thumbnail || null,
             relatedImageKeywords: args.relatedImageKeywords || [],
             imageUrls: args.imageUrls || [],
@@ -322,10 +328,15 @@ const createServer = () => {
         viruagent_save_draft: () => {
           const sanitizedTitle = sanitizeTitleDecorations(args.title || '');
           const hasSanitizedTitle = String(sanitizedTitle || '').trim() !== String(args.title || '').trim();
+          const tags = generateAutoTags({
+            title: sanitizedTitle,
+            content: args.content || '',
+            providedTags: args.tags || '',
+          });
           const policy = validateMcpSystemPrompt({
             title: sanitizedTitle,
             content: args.content || '',
-            tags: args.tags || '',
+            tags,
           });
           if (args.enforceSystemPrompt !== false && !policy.valid) {
             return {
@@ -335,7 +346,7 @@ const createServer = () => {
               originalTitle: args.title || '',
               sanitizedTitle,
               hasSanitizedTitle,
-              tags: args.tags || '',
+              tags,
               category: Number(args.category) || 0,
               violations: policy.violations,
               warnings: policy.warnings,
@@ -349,7 +360,7 @@ const createServer = () => {
           return provider.saveDraft({
             title: sanitizedTitle,
             content: args.content,
-            tags: args.tags || '',
+            tags,
             category: Number(args.category) || 0,
             relatedImageKeywords: args.relatedImageKeywords || [],
             imageUrls: args.imageUrls || [],
