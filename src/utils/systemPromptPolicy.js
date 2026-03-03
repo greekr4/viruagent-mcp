@@ -27,6 +27,20 @@ const normalizeDataKeStyleValue = (rawValue = '') => {
   return toLowerCaseTrim(unescaped).replace(/^["']|["']$/gu, '');
 };
 
+const collectDataKeStyles = (html = '', tagName = '') => {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*\\bdata-ke-style\\s*=\\s*(?:(["'])(.*?)\\1|([^\\s>]+))`, 'gi');
+  const matches = String(html || '').matchAll(pattern);
+  const styles = [];
+
+  for (const match of matches) {
+    const styleValue = match?.[2] || match?.[3];
+    if (!styleValue) continue;
+    styles.push(normalizeDataKeStyleValue(styleValue));
+  }
+
+  return [...new Set(styles.filter(Boolean))];
+};
+
 const hasTagWithDataKeStyle = (html = '', tagName = '', styleName = '') => {
   const pattern = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
   const target = toLowerCaseTrim(styleName);
@@ -48,6 +62,15 @@ const hasTagWithDataKeStyle = (html = '', tagName = '', styleName = '') => {
   }
 
   return false;
+};
+
+const stripHtmlText = (html = '') => {
+  return String(html || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 };
 
 const toArray = (tags = '') =>
@@ -94,6 +117,7 @@ const hasInvalidTitleDecoration = (title = '') => {
 const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) => {
   const sanitizedTitle = sanitizeTitleDecorations(title);
   const textContent = String(content || '');
+  const textContentLength = stripHtmlText(textContent).length;
   const prompt = readPrompt();
   const violations = [];
   const warnings = [];
@@ -109,36 +133,52 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
   }
 
   const h2Count = countMatches(textContent, /<h2\b/gi);
+  const hrWithStyleCount = countMatches(
+    textContent,
+    /<hr\b[^>]*\bdata-ke-style\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))[^>]*>/gi
+  );
+  const hrStyles = collectDataKeStyles(textContent, 'hr');
+  const uniqueHrStyles = hrStyles.filter(Boolean);
+  const hrStyle = uniqueHrStyles[0] || '';
   const imagePlaceholderCount = countMatches(textContent, /<!--\s*IMAGE:\s*[^>]+-->/gi);
-  const listExists = /<ul\b/i.test(textContent) || /<ol\b/i.test(textContent);
-  const tableExists = /<table\b/i.test(textContent);
   const quoteExists = hasTagWithDataKeStyle(textContent, 'blockquote', 'style1');
-  const hrExists = hasTagWithDataKeStyle(textContent, 'hr', 'style6');
+  const hrExists = uniqueHrStyles.length > 0;
   const listParagraphExists = /<p\b[^>]*data-ke-size="size16"/i.test(textContent);
   const htmlLike = /<[a-zA-Z][^>]*>/g.test(textContent);
 
-  if (h2Count < 6) {
-    violations.push('섹션 수가 부족합니다. `h2`를 최소 6개 이상 사용하세요.');
+  if (h2Count < 5) {
+    violations.push('섹션 수가 부족합니다. `h2`를 최소 5개 이상 사용하세요.');
+  }
+
+  if (hrWithStyleCount < h2Count) {
+    violations.push(`섹션 분리 규칙이 부족합니다. 현재 h2 ${h2Count}개 기준으로 ` +
+      `style가 있는 hr가 최소 ${h2Count}개 필요합니다.`);
+  }
+
+  const firstHrPosition = textContent.search(/<hr\b[^>]*\bdata-ke-style/gi);
+  const firstH2Position = textContent.search(/<h2\b/gi);
+  if (firstHrPosition !== -1 && firstH2Position !== -1 && firstHrPosition > firstH2Position) {
+    violations.push('첫 구분선은 첫 <h2>보다 먼저 배치해야 합니다.');
+  }
+
+  if (!hrExists) {
+    violations.push('구분선(`data-ke-style`)이 없습니다.');
+  } else if (uniqueHrStyles.length > 1) {
+    violations.push(`구분선 style이 섞였습니다: ${uniqueHrStyles.join(', ')}`);
+  } else if (!/^style[1-8]$/.test(hrStyle)) {
+    violations.push(`구분선 style은 style1~style8만 허용됩니다. 현재: ${hrStyle}`);
   }
 
   if (imagePlaceholderCount < 1) {
     violations.push('상단 고정 규격에 필요한 `<!-- IMAGE: ... -->` 플레이스홀더가 없습니다.');
   }
 
+  if (textContentLength < 1500 || textContentLength > 2000) {
+    violations.push(`본문 길이는 1500~2000자여야 합니다. 현재 ${textContentLength}자입니다.`);
+  }
+
   if (!quoteExists) {
     violations.push('상단 인용문 블록(`blockquote data-ke-style="style1"`)이 없습니다.');
-  }
-
-  if (!hrExists) {
-    violations.push('구분선(`data-ke-style="style6"`)이 없습니다.');
-  }
-
-  if (!listExists) {
-    violations.push('목록(`ul` 또는 `ol`)을 1개 이상 넣어 주세요.');
-  }
-
-  if (!tableExists) {
-    violations.push('표(`table`)를 1개 이상 넣어 주세요.');
   }
 
   if (!listParagraphExists) {
@@ -147,10 +187,6 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
 
   if (!htmlLike) {
     violations.push('본문이 HTML 형태가 아니거나 태그가 거의 없습니다.');
-  }
-
-  if (!htmlLike && !prompt.includes('형식: 티스토리 HTML 중심')) {
-    warnings.push('system-prompt.md의 HTML 규격과 일치하지 않을 수 있습니다.');
   }
 
   if (isMarkdownLike(textContent)) {
@@ -170,12 +206,16 @@ const validateMcpSystemPrompt = ({ title = '', content = '', tags = '' } = {}) =
     violations,
     warnings,
     rules: {
-      minH2: 6,
+      minH2: 5,
       requireImagePlaceholder: 1,
       requireQuote: true,
       requireHr: true,
-      requireList: true,
-      requireTable: true,
+      requireSingleHrStyle: true,
+      hrStyleRange: 'style1~style8',
+      requireList: false,
+      requireTable: false,
+      minContentLength: 1500,
+      maxContentLength: 2000,
       requiredTagCount: 10,
       titleMinLength: 12,
     },

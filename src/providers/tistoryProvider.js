@@ -51,7 +51,7 @@ const KAKAO_ACCOUNT_CONFIRM_SELECTORS = {
   ],
 };
 
-const MAX_IMAGE_UPLOAD_COUNT = 5;
+const MAX_IMAGE_UPLOAD_COUNT = 1;
 
 const readCredentialsFromEnv = () => {
   const username = process.env.TISTORY_USERNAME || process.env.TISTORY_USER || process.env.TISTORY_ID;
@@ -989,8 +989,8 @@ const replaceImagePlaceholdersWithUploaded = async (
   autoUploadImages,
   relatedImageKeywords = [],
   imageUrls = [],
-  imageCountLimit = 5,
-  minimumImageCount = 3
+  _imageCountLimit = 1,
+  _minimumImageCount = 1
 ) => {
   const originalContent = content || '';
   const articleCandidates = extractArticleUrlsFromContent(originalContent);
@@ -1015,20 +1015,9 @@ const replaceImagePlaceholdersWithUploaded = async (
       : typeof relatedImageKeywords === 'string'
       ? relatedImageKeywords.split(',').map((item) => item.trim()).filter(Boolean)
       : [];
-  const normalizedImageUploadLimit = Number.isFinite(Number(imageCountLimit)) && Number(imageCountLimit) > 0
-    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(imageCountLimit))
-    : MAX_IMAGE_UPLOAD_COUNT;
-  const safeMinimumImageCount = Number.isFinite(Number(minimumImageCount)) && Number(minimumImageCount) >= 0
-    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(minimumImageCount))
-    : 3;
-  const safeImageUploadLimit = Math.max(normalizedImageUploadLimit, safeMinimumImageCount);
-  const targetImageCount = Math.min(
-    safeImageUploadLimit,
-    Math.max(
-      hasPlaceholders ? matches.length : 0,
-      safeMinimumImageCount
-    )
-  );
+  const safeImageUploadLimit = MAX_IMAGE_UPLOAD_COUNT;
+  const safeMinimumImageCount = MAX_IMAGE_UPLOAD_COUNT;
+  const targetImageCount = MAX_IMAGE_UPLOAD_COUNT;
 
   const uploadTargets = hasPlaceholders
     ? await Promise.all(matches.map(async (match, index) => {
@@ -1195,7 +1184,7 @@ const replaceImagePlaceholdersWithUploaded = async (
     }
 
   if (uploadErrors.length > 0) {
-    if (uploadedImages.length < Math.max(1, safeMinimumImageCount)) {
+    if (uploadedImages.length < safeMinimumImageCount) {
       return {
         content: updatedContent,
         uploaded: uploadedImages,
@@ -1256,15 +1245,11 @@ const enrichContentWithUploadedImages = async ({
   autoUploadImages,
   relatedImageKeywords = [],
   imageUrls = [],
-  imageUploadLimit = 5,
-  minimumImageCount = 3,
+  _imageUploadLimit = 1,
+  _minimumImageCount = 1,
 }) => {
-  const safeImageUploadLimit = Number.isFinite(Number(imageUploadLimit)) && Number(imageUploadLimit) > 0
-    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(imageUploadLimit))
-    : MAX_IMAGE_UPLOAD_COUNT;
-  const safeMinimumImageCount = Number.isFinite(Number(minimumImageCount)) && Number(minimumImageCount) >= 0
-    ? Math.min(MAX_IMAGE_UPLOAD_COUNT, Number(minimumImageCount))
-    : 3;
+  const safeImageUploadLimit = MAX_IMAGE_UPLOAD_COUNT;
+  const safeMinimumImageCount = MAX_IMAGE_UPLOAD_COUNT;
 
   const shouldAutoUpload = autoUploadImages !== false;
   const enrichedImages = await replaceImagePlaceholdersWithUploaded(
@@ -1602,14 +1587,8 @@ const createTistoryProvider = ({ sessionPath }) => {
         const relatedImageKeywords = payload.relatedImageKeywords || [];
         const imageUrls = payload.imageUrls || [];
         const autoUploadImages = payload.autoUploadImages !== false;
-        const imageUploadLimit = Number(payload.imageUploadLimit);
-        const minimumImageCount = Number(payload.minimumImageCount);
-        const safeImageUploadLimit = Number.isFinite(imageUploadLimit) && imageUploadLimit > 0
-          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, imageUploadLimit)
-          : MAX_IMAGE_UPLOAD_COUNT;
-        const safeMinimumImageCount = Number.isFinite(minimumImageCount) && minimumImageCount >= 0
-          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, minimumImageCount)
-          : 3;
+        const safeImageUploadLimit = MAX_IMAGE_UPLOAD_COUNT;
+        const safeMinimumImageCount = MAX_IMAGE_UPLOAD_COUNT;
 
         if (autoUploadImages) {
           await tistoryApi.initBlog();
@@ -1851,14 +1830,8 @@ const createTistoryProvider = ({ sessionPath }) => {
         const relatedImageKeywords = payload.relatedImageKeywords || [];
         const imageUrls = payload.imageUrls || [];
         const autoUploadImages = payload.autoUploadImages !== false;
-        const imageUploadLimit = Number(payload.imageUploadLimit);
-        const minimumImageCount = Number(payload.minimumImageCount);
-        const safeImageUploadLimit = Number.isFinite(imageUploadLimit) && imageUploadLimit > 0
-          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, imageUploadLimit)
-          : MAX_IMAGE_UPLOAD_COUNT;
-        const safeMinimumImageCount = Number.isFinite(minimumImageCount) && minimumImageCount >= 0
-          ? Math.min(MAX_IMAGE_UPLOAD_COUNT, minimumImageCount)
-          : 3;
+        const safeImageUploadLimit = MAX_IMAGE_UPLOAD_COUNT;
+        const safeMinimumImageCount = MAX_IMAGE_UPLOAD_COUNT;
 
         if (autoUploadImages) {
           await tistoryApi.initBlog();

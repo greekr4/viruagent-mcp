@@ -7,9 +7,8 @@ Claude/코덱스/코드형 에이전트가 일관된 형식으로 `title`, `cont
 
 - 목표: 검색 유입과 독자 체류를 높일 수 있는 티스토리 발행용 원문 HTML 생성
 - 언어: 한국어
-- 톤: 친근하지만 전문적인 2인칭 설명형
-- 글 길이: 기존 대비 평균 2배 분량 목표
-- 한 단락 3~6문장, 핵심은 명확히 6~10개 항목으로 압축
+- 톤: 친근하지만 전문적인 설명형
+- 글 길이: HTML 태그 제거 후 텍스트 기준 1500~2000자 고정
 - 형식: 티스토리 HTML 중심, 마크다운 문법 금지
 
 ## 2) MCP 호출 규격
@@ -82,49 +81,71 @@ Claude/코덱스/코드형 에이전트가 일관된 형식으로 `title`, `cont
 - 업로드 전체 실패
   - `status: "image_upload_failed"` + `uploadErrors` 반환
 
-## 4) 글 작성 템플릿 (필수 상단 고정)
+## 4) 글 작성 구조 (필수)
 
-1. 인용문 블록 (style1) + 줄바꿈
-2. 썸네일 플레이스홀더 1개: `<!-- IMAGE: keyword -->`
-3. 구분선 1회
-4. 본문 시작
+- 글은 `1500자 이상 2000자 이하`로 작성한다. (HTML 태그 제거 후 본문 텍스트 길이 기준)
+- 구조는 상단 고정 블록 + `h2/p/hr` 반복 패턴을 따른다.
+- 최소 5개 이상의 `h2` 섹션을 구성한다.
+- 스타일은 자유롭게 작성하되, 레퍼런스 태그/구분 규칙은 반드시 준수한다.
 
-예시 상단:
+### 4-1) 상단 고정 블록 (필수)
+
+1. 인용문 블록 1개 (`blockquote` + `data-ke-style="style1"`)
+2. 줄바꿈 `<p data-ke-size="size16"><br/></p>`
+3. 썸네일 플레이스홀더 1개: `<!-- IMAGE: keyword -->`
+4. 구분선 1회 (`hr` + `data-ke-style="style[1~8]"`, 글 전체 동일 스타일 유지)
+
 ```html
-<blockquote data-ke-style="style1"><span style="font-family: 'Noto Serif KR';">여기에 한 줄 훅 문장</span></blockquote><p data-ke-size="size16"><br/></p>
+<blockquote data-ke-style="style1"><span style="font-family: 'Noto Serif KR';">한 줄 훅 문장</span></blockquote>
+<p data-ke-size="size16"><br/></p>
 <!-- IMAGE: artificial intelligence -->
 <hr contenteditable="false" data-ke-type="horizontalRule" data-ke-style="style6" />
+```
+
+### 4-2) 반복 본문 패턴 (필수)
+
+상단 고정 이후에 아래 패턴을 반복해서 구성한다.
+
+`<h2>주제 제목</h2> -> 본문(`p`) -> <hr data-ke-style="style[1~8]" />`
+
+- 최소 5회 이상 반복
+- 구분선은 `h2` 전환 구간에 삽입하되, 전체 문서에서 동일 `style` 값 1개만 사용한다.
+
+예시:
+```html
+<h2>주제 A</h2>
+<p data-ke-size="size16">...</p>
+<hr data-ke-style="style6" />
+<h2>주제 B</h2>
+<p data-ke-size="size16">...</p>
+<hr data-ke-style="style6" />
 ```
 
 ## 5) HTML 작성 규칙
 
 - 마크다운 문법 사용 금지 (`**`, `#`, `*`, `` ` `` 등)
-- 기본 본문 태그
-  - `<h2>`, `<h3>`
-  - `<p data-ke-size="size16">`
-  - `<ul data-ke-list-type="disc">`, `<ol data-ke-list-type="decimal">`
-  - `<table ... data-ke-style="style13">`
-  - `<blockquote data-ke-style="style1|style2|style3">`
-- `<hr contenteditable="false" data-ke-type="horizontalRule" data-ke-style="style6" />`
+- 티스토리 HTML 레퍼런스 (필수 사용 태그)
+  - 문단: `<p data-ke-size="size16">텍스트</p>`
+  - 빈 줄: `<p data-ke-size="size16">&nbsp;</p>`
+  - 제목: `<h2>`, `<h3>`
+  - 강조: `<strong>굵게</strong>`, `<span style="background-color: #f89009;">배경색</span>`
+  - 인용: `<blockquote data-ke-style="style1|style2|style3">텍스트</blockquote>`
+  - 구분선: `<hr contenteditable="false" data-ke-type="horizontalRule" data-ke-style="style[1~8]" />`
+  - 코드 블록(필요 시): `<pre id="code_[timestamp]" class="[lang]" data-ke-language="[lang]" data-ke-type="codeblock"><code>코드</code></pre>`
+- 선택 사용 태그: 리스트(`<ul>`, `<ol>`), 테이블(`<table>`).
 
-### 4-1) 상단 고정 외 비필수 확장
+- 기본 권장 분리선:
+  - `<hr contenteditable="false" data-ke-type="horizontalRule" data-ke-style="style6" />`
 
-- 상단 고정 뒤 첫 섹션은 절대 `기본 소개` 고정어로 시작하지 않는다.
-- 동일 주제라도 문체는 최소 1회 이상 바꾼다.
-- 동일 글의 모든 구분선은 동일 스타일을 유지한다.
-- 구분선은 글 전체에서 **하나의 스타일만 사용**
-- `p` 중간 단락 구분은 1~2개 정도의 빈칸(`&nbsp;`) 허용
-- `<!-- IMAGE: keyword -->` 플레이스홀더가 있으면 해당 키워드로 이미지를 채워 본문에 반영한다(`<img src="...">`로 삽입하며, 내부적으로는 업로드 키(`kage@...`)로 썸네일 후보를 생성).
+## 6) 구조 가이드 (권장)
 
-## 6) 구조 가이드 (필수)
+- 기본 가독성은 유지하면서 자유도를 준다.
+- 최소 5개 이상의 `h2` 섹션을 갖추고, 결론으로 수렴한다.
+- 동일 주제에서 같은 결론 어조 반복은 피한다.
+- 마지막에는 실천 가능한 결론 1개 이상 제시한다.
+- 글 작성 전 스타일 모드는 참고로 1개만 선택한다.
 
-- 글은 최소 6개 이상의 `h2` 섹션
-- 섹션 간 구분선 삽입
-- 최근 글과 동일한 전개를 반복하지 않도록 라벨/관점 변화
-- 마지막에는 실천 가능한 결론 1개 이상 제시
-- 글 생성 직전 반드시 `스타일 모드`를 1개 선택하고 그 규칙을 따른다.
-
-### 스타일 모드 (1개만 필수 선택)
+### 스타일 모드 (1개만 선택, 권장)
 
 - 뉴스 분석 모드: `현상 요약 → 근거 제시 → 영향 분석 → 실행 체크`
 - 실전 가이드 모드: `문제 정의 → 해결 절차 → 단계별 점검표 → 실패 패턴`
@@ -134,8 +155,7 @@ Claude/코덱스/코드형 에이전트가 일관된 형식으로 `title`, `cont
 
 ### 섹션 구성 룰 (모드별 최소 1개 이상 혼합)
 
-- 최소 1개: 문단형(`p`) + 1개: 리스트(`ul` 또는 `ol`) + 1개: 표(`table`)
-- 텍스트 비중이 전체의 70%를 넘기지 않도록 1개 이상 구조 요소(목록/표/인용)를 추가
+- 최소 1개: 문단형(`p`)
 - 동일 모드라도 제목 라벨은 매번 변경
 
 ### 제목 패턴 (요청이 없으면 자동 적용)
@@ -148,9 +168,9 @@ Claude/코덱스/코드형 에이전트가 일관된 형식으로 `title`, `cont
 
 ## 7) 이미지 플레이스홀더 규칙
 
-- 본문 중간에 총 2~3개 삽입 가능
+- 본문 내 이미지는 총 1개만 사용한다.
 - 형식: `<!-- IMAGE: EnglishKeyword -->`
-- 각 섹션 전환 구간에 배치
+- 상단 고정 블록의 위치에 1개만 배치한다.
 - 영문 1~3단어(예: `open source`, `ai workflow`, `kubernetes`)
 - `imageUrls`에 실제 이미지를 URL로 수집해 넣고 `viruagent_publish`로 전달한다.
 - `viruagent_publish`에서는 `imageUrls`를 로컬 임시 다운로드 후 티스토리 업로드로 치환한다.
@@ -158,16 +178,13 @@ Claude/코덱스/코드형 에이전트가 일관된 형식으로 `title`, `cont
 
 ### 변형 규칙
 
-- 뉴스 요약은 초반에는 `리스트`로, 후반에는 `표`로 이어지는 흐름 사용
-- 가이드형은 `표`로 시작하지 말고, `목표` 또는 `문제` 서술로 시작
-- 비교형은 표를 먼저 쓰지 말고, 결론부 직전에 비교표를 둔다
+- 리스트/표 구성은 선택 항목이다.
 - 각 글의 `h2` 라벨 3개 중 최소 1개는 기존 기본 라벨(예: `결론`, `정리`)을 사용하지 않는다.
 
 ## 8) 반복 사용 방지 체크리스트
 
 - 동일 주제에서 직전 글과 동일한 `스타일 모드` 사용 금지
 - 동일 주제/키워드에서 마지막 섹션 제목이 같으면 안 된다.
-- 최소 1개는 표, 최소 1개는 목록, 최소 1개는 인용문, 최소 1개는 실천 항목을 반드시 포함
 - 마지막 2문단은 한 문단당 문장 2문장 이하로 단정적으로 마무리
 
 ## 9) 금지사항
